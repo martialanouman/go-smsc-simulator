@@ -1,0 +1,8 @@
+# minimal.yml — the smallest configuration that starts the simulator.
+#
+# At S0 the simulator hosts no virtual SMSC yet: it starts, serves the read-only
+# observability surface, and waits for SIGTERM. The virtual_smscs block arrives
+# at S1 (plan §5).
+
+observability:
+  http_port: 9000 # read-only assertion + Prometheus surface; omit this block to disable HTTP entirely

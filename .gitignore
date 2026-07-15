@@ -1,1 +1,6 @@
+# Build output
 bin/
+
+# Test artifacts
+*.out
+*.test

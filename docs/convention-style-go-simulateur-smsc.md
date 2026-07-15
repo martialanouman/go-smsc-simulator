@@ -14,7 +14,7 @@ Ce document **hérite de la convention de style de la passerelle** (`convention-
 
 **[MUST]** Tout fichier est passé à `gofmt` via `goimports` ; `gofmt -l` doit être vide en CI. Indentation par tabulations. Ligne cible 99 colonnes, plafond souple 120 — extraire une variable plutôt que laisser filer une ligne.
 
-**[MUST]** `goimports` en **trois groupes** (stdlib / tiers / interne), `local-prefixes: github.com/martialanouman/smsc-simulator`.
+**[MUST]** `goimports` en **trois groupes** (stdlib / tiers / interne), `local-prefixes: github.com/martialanouman/go-smsc-simulator`.
 
 ---
 
@@ -161,12 +161,11 @@ Tous ceux de la passerelle (`convention-style-go.md` §8), **plus** ces spécifi
 **[MUST]** `golangci-lint` avec `.golangci.yml` versionné ; le CI échoue sur toute alerte. Ensemble minimal (aligné sur la passerelle, sans les linters SQL/HTTP inutiles ici) :
 
 ```yaml
+version: "2"
 run:
   timeout: 5m
 linters:
   enable:
-    - gofmt
-    - goimports
     - govet
     - staticcheck
     - revive          # naming / style
@@ -180,19 +179,27 @@ linters:
     - contextcheck
     - nakedret
     - prealloc
-linters-settings:
-  goimports:
-    local-prefixes: github.com/martialanouman/smsc-simulator
-  revive:
-    rules:
-      - name: exported
-      - name: var-naming
-      - name: receiver-naming
-      - name: context-as-argument
-      - name: error-strings
+  settings:
+    revive:
+      rules:
+        - name: exported
+        - name: var-naming
+        - name: receiver-naming
+        - name: context-as-argument
+        - name: error-strings
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/martialanouman/go-smsc-simulator
 issues:
   max-same-issues: 0
 ```
+
+> **Schéma v2.** Ce fichier suit le schéma **golangci-lint v2** (version épinglée : `v2.3.0`, cf. `Makefile`). Différences avec le v1, si tu croises une ancienne config : la clé `version: "2"` est obligatoire ; `gofmt`/`goimports` sont des **formatters**, plus des linters, et vivent dans un bloc `formatters` séparé ; `linters-settings` devient `linters.settings` ; `local-prefixes` prend une **liste**, plus une chaîne. Une config v1 est rejetée au chargement par la v2.
 
 *(Pas de `bodyclose`/`rowserrcheck`/`sqlclosecheck`/`noctx` : ni SQL, ni client HTTP sortant sur les chemins chauds.)*
 
