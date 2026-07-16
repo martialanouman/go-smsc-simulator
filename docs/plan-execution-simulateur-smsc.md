@@ -51,7 +51,7 @@ Ces choix sont fixés une fois ; tous les jalons s'y conforment. Les changer plu
 ### 1.1 Module, repo & versions
 
 - **Repo séparé de la passerelle.** Décision déjà actée côté passerelle (`plan-execution-passerelle.md` §1.8/§18, `CLAUDE.md`) : le simulateur est *un projet/binaire externe, pas un module Go de la passerelle*. Il a son propre dépôt, son cycle de release, zéro dépendance vers le code de la passerelle.
-- **Module Go :** `github.com/martialanouman/smsc-simulator` (proposé). Figure dans `go.mod`, le `local-prefixes` de goimports/`.golangci.yml`, et tous les imports internes.
+- **Module Go :** `github.com/martialanouman/go-smsc-simulator` (**acté à S0**, aligné sur le nom du dépôt). Figure dans `go.mod`, le `local-prefixes` de goimports/`.golangci.yml`, et tous les imports internes.
 - **Go :** 1.23+ (pour `slog`, `math/rand/v2`, `go test -fuzz`, generics matures).
 
 > **Point de décision — partage du codec SMPP.** La spec §1.3 souhaite « partager le codec de PDU SMPP » avec la passerelle. Comme le codec de la passerelle vit dans `internal/smpp` (non importable hors module) et que le simulateur est un **repo séparé**, le partage direct est impossible aujourd'hui. Deux options :
@@ -86,6 +86,7 @@ Le simulateur a **zéro dépendance d'infrastructure** (pas de Kafka/Postgres/Re
 
 - **SMPP par SMSC virtuel** : chaque SMSC virtuel écoute sur **son** port, défini dans le `.yml` (convention d'exemple : `2775`, `2776`, …).
 - **Observabilité (read-only)** : un port HTTP unique pour tout le processus, défini par `observability.http_port` du `.yml` (convention : `9000`). Sert `/health`, l'inspection read-only et `/metrics`. **Bloc `observability` omis → aucun serveur HTTP** (mode « boîte noire », spec §5.2).
+- **Préfixe de chemin (acté à S0)** : `/health` et `/metrics` sont **nus**, sans préfixe ; le `/v1` de la spec §5.2 ne couvre que les endpoints d'**inspection** livrés à `S2` (`/v1/virtual-smscs`, …). Motif : les sondes de liveness et les scrapers Prometheus attendent des chemins conventionnels et non versionnés, et l'inspection est la seule surface dont le contrat mérite une version.
 
 ### 1.5 Déterminisme (le cœur du produit — spec §6.3)
 
@@ -174,7 +175,7 @@ Dès que la passerelle (ou un client SMPP de test) se binde, soumet, reçoit `ES
 
 - `internal/config` complet : structs pour `observability`, `virtual_smscs[]` (name, port, `bind_credentials`, TON/NPI, `address_range`, `tls`, `seed`, `pdu_buffer_size`, `throughput_limit_per_sec`), `scenario` (`profile`, `params`, `latency`, `dlr`, `protocol_edge_cases_enabled`), `mo_injection`, `scheduled_disconnects[]`, `scheduled_transitions[]`.
 - **Validation fail-fast** (spec §3.1) : `profile` inconnu → erreur ; `clock: wallclock` avec un `seed` défini → erreur ; port en doublon → erreur ; paramètre hors bornes → erreur ; référence de `to_profile` inconnue → erreur. Chaque erreur nomme le champ fautif.
-- `examples/*.yml` : fixtures valides couvrant chaque profil + fixtures invalides pour les tests (une par règle de validation).
+- `examples/*.yml` : fixtures **valides** couvrant chaque profil. Les fixtures **invalides** (une par règle de validation) vivent dans `internal/config/testdata/` — **acté à S0** : `examples/` ne contient que des configurations démontrables (`make run CONFIG=…`) et un test itère le dossier en exigeant que tout y charge, ce qui interdit d'y ranger des fixtures cassées.
 - `internal/config` expose un modèle **immuable** après `Load` (aucun setter).
 
 **Nouvelles dépendances :** aucune.

@@ -1,0 +1,3 @@
+observability:
+  http_port: 9000
+   this line is indented wrong and is not valid YAML

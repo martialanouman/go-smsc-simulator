@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: # allow a manual re-run from the Actions tab
+
+permissions:
+  contents: read
+
+# Cancel a superseded run when a PR is pushed again, but never cancel a run on
+# main: every commit that lands there must stay independently verified.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Pinned to the exact version in the Makefile so local `make lint` and CI
+      # run the same binary; the shared .golangci.yml keeps the behaviour equal.
+      #
+      # install-mode: goinstall builds golangci-lint from source with the Go
+      # toolchain set up above (1.26.5, from go.mod), exactly as `make tools`
+      # does locally. The prebuilt release binary is compiled with an older Go
+      # and refuses to analyse a module whose `go` directive targets 1.26.5
+      # ("the Go language version used to build golangci-lint is lower than the
+      # targeted Go version").
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.3.0
+          install-mode: goinstall
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test # the Makefile target is the source of truth (CLAUDE.md)
+
+  vuln:
+    name: vuln
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0 # pinned; keep in sync with the Makefile
+      - run: make vuln
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make build

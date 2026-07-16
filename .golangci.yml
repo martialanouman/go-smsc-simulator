@@ -1,0 +1,40 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - revive # naming / style
+    - errcheck
+    - ineffassign
+    - unused
+    - unconvert
+    - misspell
+    - gocritic
+    - gosec # no leaked secrets
+    - contextcheck
+    - nakedret
+    - prealloc
+  settings:
+    revive:
+      rules:
+        - name: exported
+        - name: var-naming
+        - name: receiver-naming
+        - name: context-as-argument
+        - name: error-strings
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/martialanouman/go-smsc-simulator
+
+issues:
+  max-same-issues: 0

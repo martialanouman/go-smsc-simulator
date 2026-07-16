@@ -1,0 +1,2 @@
+observability:
+  http_port: "not-a-port"
