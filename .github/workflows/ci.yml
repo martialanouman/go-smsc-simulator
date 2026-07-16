@@ -17,9 +17,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Pinned to the exact version in the Makefile so local `make lint` and CI
+      # run the same binary; the shared .golangci.yml keeps the behaviour equal.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.3
+          version: v2.3.0
 
   test:
     name: test
@@ -29,7 +31,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test -race ./...
+      - run: make test # the Makefile target is the source of truth (CLAUDE.md)
 
   vuln:
     name: vuln
@@ -39,8 +41,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: govulncheck ./...
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0 # pinned; keep in sync with the Makefile
+      - run: make vuln
 
   build:
     name: build
@@ -50,4 +52,4 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go build -o bin/smsc-simulator ./cmd/smsc-simulator
+      - run: make build

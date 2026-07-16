@@ -4,6 +4,7 @@ BIN_DIR     := bin
 CONFIG      ?= examples/minimal.yml
 
 GOLANGCI_LINT_VERSION := v2.3.0
+GOVULNCHECK_VERSION   := v1.6.0
 DOCKER_IMAGE          := smsc-simulator:dev
 
 .PHONY: all tools build test lint vuln run docker clean
@@ -13,7 +14,7 @@ all: lint test build
 ## tools: install the Go binaries kept out of go.mod (plan §1.3)
 tools:
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	go install golang.org/x/vuln/cmd/govulncheck@latest
+	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 ## build: compile the single binary
 build:
