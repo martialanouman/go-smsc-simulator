@@ -4,9 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: # allow a manual re-run from the Actions tab
 
 permissions:
   contents: read
+
+# Cancel a superseded run when a PR is pushed again, but never cancel a run on
+# main: every commit that lands there must stay independently verified.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
