@@ -1,0 +1,14 @@
+# Invalid: scenario.profile is not in the frozen catalogue → ErrUnknownProfile.
+virtual_smscs:
+  - name: carrier-a
+    port: 2775
+    bind_credentials: { system_id: smppclient1, password: secret }
+    addr_ton: 1
+    addr_npi: 1
+    seed: 42
+    pdu_buffer_size: 10000
+    scenario:
+      profile: not-a-carrier
+      latency:
+        distribution: fixed
+        params: { ms: 20 }

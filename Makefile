@@ -7,9 +7,12 @@ GOLANGCI_LINT_VERSION := v2.3.0
 GOVULNCHECK_VERSION   := v1.6.0
 DOCKER_IMAGE          := smsc-simulator:dev
 
-.PHONY: all tools build test lint vuln run docker clean
+.PHONY: all check tools build test lint vuln run docker clean
 
 all: lint test build
+
+## check: the full Definition of Done gate — lint, race tests, vuln scan, build
+check: lint test vuln build
 
 ## tools: install the Go binaries kept out of go.mod (plan §1.3)
 tools:

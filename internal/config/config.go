@@ -18,15 +18,18 @@ import (
 // Config is the whole simulator configuration, materialised from the YAML file.
 //
 // It is immutable once Load returns: callers read it, never write it. Every
-// value here is decided before a single port is opened (invariant b).
-//
-// STUB S1: only the observability block is modelled. The full §3.1 schema
-// (virtual_smscs, scenario, mo_injection, scheduled_*) lands at S1. See plan §5.
+// value here is decided, and fully validated, before a single port is opened
+// (invariant b). The struct tree for virtual_smscs and its scenario/schedule
+// blocks lives in schema.go; the enums in enums.go; the validation in validate.go.
 type Config struct {
 	// Observability is nil when the block is absent from the YAML, which
 	// disables the HTTP surface entirely — the "black box" mode of spec §5.2.
 	// Absent and zero are different states, hence the pointer.
 	Observability *ObservabilityConfig `yaml:"observability"`
+
+	// VirtualSMSCs is the topology: zero or more virtual SMSCs, each on its own
+	// port. Absent (nil) is a valid, black-box configuration serving no SMPP.
+	VirtualSMSCs []VirtualSMSCConfig `yaml:"virtual_smscs"`
 }
 
 // ObservabilityConfig describes the process-wide read-only HTTP surface.
@@ -41,17 +44,16 @@ type ObservabilityConfig struct {
 // The simulator has no default configuration: a missing --config is fatal.
 var ErrNoConfigPath = errors.New("no config path given")
 
-// Load reads and parses the YAML configuration at path.
+// Load reads, parses and fully validates the YAML configuration at path.
 //
-// fail-fast: Load is the boot gate. Every error it can report happens before
-// the process binds anything, so an invalid file can never leave a half-open
-// listener behind (invariant b). Unknown YAML keys are rejected: a key the
-// schema does not know is a typo, and a typo silently ignored is a test lying
-// about what it exercised.
+// fail-fast: Load is the boot gate. Every error it can report — syntax, unknown
+// key, or a broken §3.1 rule (unknown profile, duplicate port, seed/clock
+// coherence, out-of-bounds param) — happens before the process binds anything, so
+// an invalid file can never leave a half-open listener behind (invariant b).
+// Unknown YAML keys are rejected: a key the schema does not know is a typo, and a
+// typo silently ignored is a test lying about what it exercised.
 //
-// STUB S1: validation stops at "file readable and YAML well-formed". Business
-// validation (known profile, unique ports, seed/clock coherence, param bounds)
-// lands at S1. See plan §5.
+// On any failure Load returns (nil, err): no half-validated config leaks out.
 func Load(path string) (*Config, error) {
 	if path == "" {
 		return nil, ErrNoConfigPath
@@ -65,7 +67,18 @@ func Load(path string) (*Config, error) {
 		_ = f.Close() // best-effort on teardown: the bytes are already decoded
 	}()
 
-	return decode(f, path)
+	cfg, err := decode(f, path)
+	if err != nil {
+		return nil, err
+	}
+
+	// fail-fast: rejected at config load. Business validation runs before Load
+	// returns, so run() can never reach its boot gate with an invalid topology.
+	if err := validate(cfg); err != nil {
+		return nil, fmt.Errorf("validate config %s: %w", path, err)
+	}
+
+	return cfg, nil
 }
 
 // decode parses YAML from r. It is split out of Load so tests can exercise the

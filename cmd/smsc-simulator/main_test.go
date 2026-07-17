@@ -87,6 +87,55 @@ func TestRun_InvalidConfigOpensNoPort(t *testing.T) {
 	}
 }
 
+// TestRun_BusinessInvalidConfigOpensNoPort extends invariant (b) to the new S1
+// validation phase: the config here is syntactically valid YAML but breaks a
+// business rule (duplicate virtual-SMSC port). run must fail and the observability
+// port — named as a real free port — must still be closed afterwards. This proves
+// validate() runs above the boot gate, not merely the parser.
+func TestRun_BusinessInvalidConfigOpensNoPort(t *testing.T) {
+	t.Parallel()
+
+	port := freePort(t)
+	path := writeConfig(t, fmt.Sprintf(`observability:
+  http_port: %d
+virtual_smscs:
+  - name: carrier-a
+    port: 2775
+    bind_credentials: { system_id: c1, password: secret }
+    addr_ton: 1
+    addr_npi: 1
+    seed: 42
+    pdu_buffer_size: 10000
+    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+  - name: carrier-b
+    port: 2775
+    bind_credentials: { system_id: c2, password: secret }
+    addr_ton: 1
+    addr_npi: 1
+    seed: 43
+    pdu_buffer_size: 10000
+    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+`, port))
+
+	err := run(context.Background(), path)
+	if err == nil {
+		t.Fatal("run() with a business-invalid config = nil, want a failure")
+	}
+	if !errors.Is(err, config.ErrDuplicatePort) {
+		t.Errorf("run() error = %v, want it to wrap %v", err, config.ErrDuplicatePort)
+	}
+
+	conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+	if dialErr == nil {
+		_ = conn.Close()
+		t.Fatalf("port %d accepted a connection after an invalid config: a listener was opened before validation", port)
+	}
+}
+
 // TestRun_GracefulShutdown exercises the real shutdown path in-process.
 //
 // signal.NotifyContext derives from the context run is given, so cancelling the

@@ -1,0 +1,29 @@
+# throttling-carrier.yml — returns ESME_RTHROTTLED beyond a rate.
+#
+# Mirrors the spec §3.1 sample. Exercises the gateway's adaptive throttling loop.
+
+observability:
+  http_port: 9000
+
+virtual_smscs:
+  - name: carrier-throttling
+    port: 2775
+    bind_credentials:
+      system_id: smppclient1
+      password: secret
+    addr_ton: 1
+    addr_npi: 1
+    address_range: "^33.*"
+    tls:
+      enabled: false
+    seed: 42
+    pdu_buffer_size: 10000
+    throughput_limit_per_sec: 5000
+    scenario:
+      profile: throttling-carrier
+      params:
+        throughput_cap_per_sec: 5000
+        error_code: ESME_RTHROTTLED
+      latency:
+        distribution: fixed
+        params: { ms: 40 }

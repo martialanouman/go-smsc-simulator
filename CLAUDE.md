@@ -78,6 +78,7 @@ Pyramide : beaucoup d'unitaires (codec, sélection de résultat, distributions, 
 - **Ajouter un mécanisme temporel** : le brancher sur le **Schedule Runner** (`internal/schedule`), ancré sur `per_bind_clock`, drainé par le flush de quiescence. Jamais un `time.Timer` sur horloge murale en mode graîné.
 - **Ajouter un endpoint d'observabilité** : uniquement en **lecture** (`GET`). Tout verbe mutant est refusé par principe (invariant c).
 - **Changer le schéma `.yml`** : mettre à jour `internal/config` (structs + validation), la spec §3.1, et au moins une fixture `examples/`.
+- **Exécuter un jalon** : chaque jalon `S0`–`S7` a un plan d'implémentation `steps/step-00N.md`. `steps/` = reste à faire, `steps-done/` = archive. Dès qu'un jalon est livré (critères d'acceptation verts, PR mergée), déplacer son `step-00N.md` de `steps/` vers `steps-done/`. Voir `steps/README.md`.
 
 ## Index documentaire (source de vérité)
 
