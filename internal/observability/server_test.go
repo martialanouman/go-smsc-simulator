@@ -15,11 +15,12 @@ import (
 
 // startServer boots the surface on an ephemeral port and returns its base URL.
 // Ephemeral ports are mandatory so the suite stays parallel-safe (test strategy §2).
-func startServer(t *testing.T) string {
+// insp may be nil to exercise the black-box surface (only /health registered).
+func startServer(t *testing.T, insp observability.Inspector) string {
 	t.Helper()
 
 	logger := observability.NewLogger(io.Discard, slog.LevelInfo)
-	srv, err := observability.NewServer(0, logger)
+	srv, err := observability.NewServer(0, logger, insp)
 	if err != nil {
 		t.Fatalf("NewServer() = %v, want no error", err)
 	}
@@ -61,7 +62,7 @@ func get(t *testing.T, url string) *http.Response {
 func TestServer_Health(t *testing.T) {
 	t.Parallel()
 
-	resp := get(t, startServer(t)+"/health")
+	resp := get(t, startServer(t, nil)+"/health")
 	defer func() { _ = resp.Body.Close() }()
 
 	if got, want := resp.StatusCode, http.StatusOK; got != want {
@@ -86,7 +87,7 @@ func TestServer_Health(t *testing.T) {
 func TestServer_RejectsMutatingVerbs(t *testing.T) {
 	t.Parallel()
 
-	baseURL := startServer(t)
+	baseURL := startServer(t, nil)
 
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		t.Run(method, func(t *testing.T) {
@@ -113,7 +114,7 @@ func TestServer_RejectsMutatingVerbs(t *testing.T) {
 func TestServer_UnknownRouteIsNotFound(t *testing.T) {
 	t.Parallel()
 
-	resp := get(t, startServer(t)+"/nope")
+	resp := get(t, startServer(t, nil)+"/nope")
 	defer func() { _ = resp.Body.Close() }()
 
 	if got, want := resp.StatusCode, http.StatusNotFound; got != want {
@@ -127,7 +128,7 @@ func TestServer_EphemeralPortIsResolved(t *testing.T) {
 	t.Parallel()
 
 	logger := observability.NewLogger(io.Discard, slog.LevelInfo)
-	srv, err := observability.NewServer(0, logger)
+	srv, err := observability.NewServer(0, logger, nil)
 	if err != nil {
 		t.Fatalf("NewServer() = %v, want no error", err)
 	}

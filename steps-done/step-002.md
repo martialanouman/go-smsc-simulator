@@ -1,7 +1,9 @@
 # Step 002 — S2 · Squelette SMPP vertical (bind → submit_sm → healthy → recorder → inspection)
 
 > Plan de référence : `docs/plan-execution-simulateur-smsc.md` §6.
-> **Statut : ⏳ À FAIRE — jalon le plus important (le walking skeleton).**
+> **Statut : ✅ LIVRÉ** (branche `s2-smpp-vertical-skeleton`). Walking skeleton prouvé de bout en bout.
+>
+> **Écart assumé vs plan écrit** : aucune dépendance `google/uuid` ajoutée. Les identifiants sont déterministes (`message_id` = `bindSeq-perBindClock`, ID de session = ordinal), pour être reproductibles à seed fixe (invariant a) et compatibles avec la corrélation DLR de S4 — décision validée avec l'utilisateur.
 
 ## Objectif
 
