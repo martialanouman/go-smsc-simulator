@@ -1,0 +1,15 @@
+# Invalid: slow-carrier latency must sit in [2000,4000] ms; max_ms 9000 is out of
+# the profile window → ErrParamOutOfBounds.
+virtual_smscs:
+  - name: carrier-a
+    port: 2775
+    bind_credentials: { system_id: smppclient1, password: secret }
+    addr_ton: 1
+    addr_npi: 1
+    seed: 42
+    pdu_buffer_size: 10000
+    scenario:
+      profile: slow-carrier
+      latency:
+        distribution: uniform
+        params: { min_ms: 2000, max_ms: 9000 }

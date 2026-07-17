@@ -1,0 +1,49 @@
+# Valid, exercising every §3.1 block at once. Loaded explicitly (not globbed) to
+# assert that pointer/absent-vs-zero semantics survive decoding.
+observability:
+  http_port: 9000
+
+virtual_smscs:
+  - name: carrier-full
+    port: 2775
+    bind_credentials:
+      system_id: smppclient1
+      password: secret
+    addr_ton: 1
+    addr_npi: 1
+    address_range: "^33.*"
+    tls:
+      enabled: true
+    seed: 42
+    pdu_buffer_size: 10000
+    throughput_limit_per_sec: 5000
+    scenario:
+      profile: throttling-carrier
+      params:
+        throughput_cap_per_sec: 5000
+        error_code: ESME_RTHROTTLED
+      latency:
+        distribution: fixed
+        params: { ms: 40 }
+      dlr:
+        delay: { distribution: fixed, ticks: 5 }
+        outcome_weights: { delivered: 90, failed: 8, expired: 2 }
+        clock: logical
+      protocol_edge_cases_enabled: false
+    mo_injection:
+      mode: scheduled
+      clock: logical
+      events:
+        - at_tick: 100
+          source_addr: "33600000001"
+          dest_addr: "33700000002"
+          content: "MO probe A"
+    scheduled_disconnects:
+      - at_tick: 300
+        scope: all
+        when: before_response
+    scheduled_transitions:
+      - at_tick: 200
+        to_profile: dead-carrier
+      - at_tick: 400
+        to_profile: healthy

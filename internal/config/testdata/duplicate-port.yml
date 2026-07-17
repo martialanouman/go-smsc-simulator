@@ -1,0 +1,26 @@
+# Invalid: two virtual SMSCs share port 2775 → ErrDuplicatePort.
+virtual_smscs:
+  - name: carrier-a
+    port: 2775
+    bind_credentials: { system_id: smppclient1, password: secret }
+    addr_ton: 1
+    addr_npi: 1
+    seed: 42
+    pdu_buffer_size: 10000
+    scenario:
+      profile: healthy
+      latency:
+        distribution: fixed
+        params: { ms: 20 }
+  - name: carrier-b
+    port: 2775
+    bind_credentials: { system_id: smppclient2, password: secret }
+    addr_ton: 1
+    addr_npi: 1
+    seed: 43
+    pdu_buffer_size: 10000
+    scenario:
+      profile: healthy
+      latency:
+        distribution: fixed
+        params: { ms: 20 }
