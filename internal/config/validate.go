@@ -68,7 +68,13 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	seenPort := make(map[int]string, len(cfg.VirtualSMSCs))
+	// Seed the port map with the observability port so an SMPP listener colliding
+	// with the HTTP surface is rejected at load, not at bind. Port 0 (OS-assigned
+	// ephemeral) never collides, so it is not registered.
+	seenPort := make(map[int]string, len(cfg.VirtualSMSCs)+1)
+	if cfg.Observability != nil && cfg.Observability.HTTPPort > 0 {
+		seenPort[cfg.Observability.HTTPPort] = "observability.http_port"
+	}
 	for i := range cfg.VirtualSMSCs {
 		vs := &cfg.VirtualSMSCs[i]
 		errs = append(errs, validateVirtualSMSC(vs)...)
@@ -338,12 +344,26 @@ func validateDLR(dlr *DLRConfig, seeded bool) []error {
 			ErrSeededWallclock))
 	}
 
-	if !dlr.Delay.Distribution.Valid() {
-		errs = append(errs, fmt.Errorf("%w: scenario.dlr.delay.distribution %q",
+	// S1 supports only the fixed DLR delay; uniform bounds are reserved for a later
+	// milestone (schema.go). A non-fixed distribution has no usable params in
+	// DLRDelay, so it is rejected here rather than silently producing a dead delay.
+	switch {
+	case dlr.Delay.Distribution != LatencyFixed:
+		errs = append(errs, fmt.Errorf("%w: scenario.dlr.delay.distribution %q: only fixed is supported",
 			ErrInvalidEnum, dlr.Delay.Distribution))
-	} else if dlr.Delay.Distribution == LatencyFixed && dlr.Delay.Ticks == nil {
+	case dlr.Delay.Ticks == nil:
 		errs = append(errs, fmt.Errorf("%w: scenario.dlr.delay.ticks for distribution fixed",
 			ErrMissingParam))
+	}
+	// min_ticks/max_ticks belong to the reserved uniform delay; flag them as unused
+	// under fixed, mirroring the exposed-knob discipline elsewhere.
+	if dlr.Delay.MinTicks != nil {
+		errs = append(errs, fmt.Errorf("%w: scenario.dlr.delay.min_ticks unused by distribution fixed",
+			ErrParamNotExposed))
+	}
+	if dlr.Delay.MaxTicks != nil {
+		errs = append(errs, fmt.Errorf("%w: scenario.dlr.delay.max_ticks unused by distribution fixed",
+			ErrParamNotExposed))
 	}
 
 	if dlr.OutcomeWeights.Delivered+dlr.OutcomeWeights.Failed+dlr.OutcomeWeights.Expired == 0 {
@@ -403,7 +423,20 @@ func validateMOInjection(mo *MOInjectionConfig, seeded bool) []error {
 				ErrParamNotExposed))
 		}
 	case MOModeDisabled:
-		// Nothing required; a disabled block is a no-op.
+		// A disabled block injects nothing, so any per-mode field set alongside it is
+		// dead config — flag it, mirroring the scheduled/auto unused-field checks.
+		if mo.RatePerSec != nil {
+			errs = append(errs, fmt.Errorf("%w: mo_injection.rate_per_sec unused in mode disabled",
+				ErrParamNotExposed))
+		}
+		if mo.ContentTemplate != nil {
+			errs = append(errs, fmt.Errorf("%w: mo_injection.content_template unused in mode disabled",
+				ErrParamNotExposed))
+		}
+		if len(mo.Events) > 0 {
+			errs = append(errs, fmt.Errorf("%w: mo_injection.events unused in mode disabled",
+				ErrParamNotExposed))
+		}
 	}
 
 	return errs

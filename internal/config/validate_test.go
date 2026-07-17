@@ -52,6 +52,154 @@ func TestValidate_Rules(t *testing.T) {
 	}
 }
 
+// baseSMSC is a minimal, valid single-SMSC config prefix. Coherence cases append a
+// tail (scenario + optional scheduled blocks) to exercise one validation branch.
+const baseSMSC = `virtual_smscs:
+  - name: carrier-a
+    port: 2775
+    bind_credentials: { system_id: c1, password: secret }
+    addr_ton: 1
+    addr_npi: 1
+    seed: 42
+    pdu_buffer_size: 10000
+`
+
+// TestValidate_SchemaCoherence covers the schema-coherence branches beyond the five
+// headline rules: DLR, MO injection, latency params, scheduled-disconnect enums and
+// the observability/SMPP port collision. Each case trips exactly one branch and
+// asserts the sentinel plus the field the message must name.
+func TestValidate_SchemaCoherence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		yaml    string // full config when set, else baseSMSC + tail
+		tail    string
+		wantErr error
+		errHint string
+	}{
+		{name: "dlr non-fixed distribution", wantErr: config.ErrInvalidEnum, errHint: "distribution", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+      dlr:
+        delay: { distribution: normal, ticks: 5 }
+        outcome_weights: { delivered: 1 }`},
+		{name: "dlr fixed missing ticks", wantErr: config.ErrMissingParam, errHint: "ticks", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+      dlr:
+        delay: { distribution: fixed }
+        outcome_weights: { delivered: 1 }`},
+		{name: "dlr stray min_ticks under fixed", wantErr: config.ErrParamNotExposed, errHint: "min_ticks", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+      dlr:
+        delay: { distribution: fixed, ticks: 5, min_ticks: 2 }
+        outcome_weights: { delivered: 1 }`},
+		{name: "dlr outcome weights sum zero", wantErr: config.ErrParamOutOfBounds, errHint: "outcome_weights", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+      dlr:
+        delay: { distribution: fixed, ticks: 5 }
+        outcome_weights: { delivered: 0, failed: 0, expired: 0 }`},
+		{name: "latency missing param", wantErr: config.ErrMissingParam, errHint: "max_ms", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: uniform, params: { min_ms: 10 } }`},
+		{name: "latency extra param", wantErr: config.ErrParamNotExposed, errHint: "min_ms", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20, min_ms: 10 } }`},
+		{name: "latency invalid distribution", wantErr: config.ErrInvalidEnum, errHint: "distribution", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: bogus, params: { ms: 20 } }`},
+		{name: "latency min above max", wantErr: config.ErrParamOutOfBounds, errHint: "min_ms", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: uniform, params: { min_ms: 30, max_ms: 10 } }`},
+		{name: "mo auto missing rate", wantErr: config.ErrMissingParam, errHint: "rate_per_sec", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    mo_injection: { mode: auto, content_template: "x" }`},
+		{name: "mo auto missing template", wantErr: config.ErrMissingParam, errHint: "content_template", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    mo_injection: { mode: auto, rate_per_sec: 5 }`},
+		{name: "mo scheduled missing events", wantErr: config.ErrMissingParam, errHint: "events", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    mo_injection: { mode: scheduled }`},
+		{name: "mo scheduled stray rate", wantErr: config.ErrParamNotExposed, errHint: "rate_per_sec", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    mo_injection: { mode: scheduled, rate_per_sec: 5, events: [ { at_tick: 1, source_addr: "1", dest_addr: "2", content: "c" } ] }`},
+		{name: "mo disabled stray events", wantErr: config.ErrParamNotExposed, errHint: "events", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    mo_injection: { mode: disabled, events: [ { at_tick: 1, source_addr: "1", dest_addr: "2", content: "c" } ] }`},
+		{name: "mo invalid mode", wantErr: config.ErrInvalidEnum, errHint: "mode", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    mo_injection: { mode: bogus }`},
+		{name: "mo seeded wallclock", wantErr: config.ErrSeededWallclock, errHint: "clock", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    mo_injection: { mode: auto, clock: wallclock, rate_per_sec: 5, content_template: "x" }`},
+		{name: "disconnect invalid scope", wantErr: config.ErrInvalidEnum, errHint: "scope", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    scheduled_disconnects: [ { at_tick: 1, scope: bogus, when: before_response } ]`},
+		{name: "disconnect invalid when", wantErr: config.ErrInvalidEnum, errHint: "when", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    scheduled_disconnects: [ { at_tick: 1, scope: all, when: bogus } ]`},
+		{name: "error_mix sum zero", wantErr: config.ErrParamOutOfBounds, errHint: "error_mix", tail: `    scenario:
+      profile: flaky-carrier
+      params: { error_mix: {} }
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "error_mix invalid key", wantErr: config.ErrInvalidEnum, errHint: "error_mix", tail: `    scenario:
+      profile: flaky-carrier
+      params: { error_mix: { NOT_A_CODE: 1 } }
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "observability port collides with smsc", wantErr: config.ErrDuplicatePort, errHint: "observability.http_port", yaml: `observability:
+  http_port: 2775
+virtual_smscs:
+  - name: carrier-a
+    port: 2775
+    bind_credentials: { system_id: c1, password: secret }
+    addr_ton: 1
+    addr_npi: 1
+    seed: 42
+    pdu_buffer_size: 10000
+    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			content := tc.yaml
+			if content == "" {
+				content = baseSMSC + tc.tail
+			}
+			path := writeTemp(t, "coherence.yml", content)
+
+			cfg, err := config.Load(path)
+			if err == nil {
+				t.Fatalf("Load(%s) = nil error, want a validation failure", tc.name)
+			}
+			if cfg != nil {
+				t.Errorf("Load(%s) returned a config alongside an error, want nil", tc.name)
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("Load(%s) error = %v, want it to wrap %v", tc.name, err, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.errHint) {
+				t.Errorf("Load(%s) error = %q, want it to name %q", tc.name, err, tc.errHint)
+			}
+		})
+	}
+}
+
 // TestValidate_AggregatesAllErrors pins the aggregation decision: a config broken on
 // two counts reports both sentinels at once, not just the first.
 func TestValidate_AggregatesAllErrors(t *testing.T) {
