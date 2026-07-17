@@ -1,0 +1,36 @@
+# flaky-carrier.yml — intermittent carrier: ~80% success, periodic disconnects.
+#
+# Exercises the gateway circuit breaker and retry/dead-letter paths. DLRs are
+# generated for the messages that do succeed.
+
+observability:
+  http_port: 9000
+
+virtual_smscs:
+  - name: carrier-flaky
+    port: 2775
+    bind_credentials:
+      system_id: smppclient1
+      password: secret
+    addr_ton: 1
+    addr_npi: 1
+    address_range: "^33.*"
+    tls:
+      enabled: false
+    seed: 7
+    pdu_buffer_size: 10000
+    scenario:
+      profile: flaky-carrier
+      params:
+        success_rate: 0.8
+        error_mix:
+          ESME_RSYSERR: 1
+          ESME_RSUBMITFAIL: 1
+        disconnect_interval_ticks: 500
+      latency:
+        distribution: normal
+        params: { mean_ms: 60, stddev_ms: 15 }
+      dlr:
+        delay: { distribution: fixed, ticks: 5 }
+        outcome_weights: { delivered: 90, failed: 8, expired: 2 }
+        clock: logical
