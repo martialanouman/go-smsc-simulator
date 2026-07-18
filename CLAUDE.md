@@ -41,6 +41,7 @@ Composants (`internal/`) : `config` (chargement + validation fail-fast du `.yml`
 cmd/smsc-simulator/main.go
 internal/config  internal/smpp  internal/smsc  internal/scenario  internal/fault
 internal/schedule  internal/recorder  internal/rng  internal/metrics  internal/observability
+internal/smpptest (client SMPP in-process pour les tests)
 examples/*.yml   deploy/   docs/   Dockerfile   docker-compose.yml
 ```
 

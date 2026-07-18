@@ -37,7 +37,7 @@ jobs:
       # targeted Go version").
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.3.0
+          version: v2.12.2
           install-mode: goinstall
 
   test:
