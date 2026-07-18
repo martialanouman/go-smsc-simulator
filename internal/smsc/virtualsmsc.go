@@ -30,6 +30,10 @@ type virtualSMSC struct {
 	// bindSeq assigns each accepted session a monotonic ordinal, used both as the
 	// bind id in /binds and as the high part of the deterministic message_id.
 	bindSeq atomic.Uint64
+	// dlrDropped counts delivery receipts that could not be emitted for a mapping
+	// reason (a transmitter-only origin bind cannot carry the return deliver_sm) — never
+	// dropped silently: each is also logged. Surfaced read-only via Engine.DLRsDropped.
+	dlrDropped atomic.Uint64
 }
 
 func newVirtualSMSC(cfg config.VirtualSMSCConfig, ln net.Listener, logger *slog.Logger) *virtualSMSC {
