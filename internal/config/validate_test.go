@@ -158,6 +158,14 @@ func TestValidate_SchemaCoherence(t *testing.T) {
       profile: flaky-carrier
       params: { error_mix: { NOT_A_CODE: 1 } }
       latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "seeded throughput_limit on deterministic profile", wantErr: config.ErrSeededThroughputLimit, errHint: "throughput_limit_per_sec", tail: `    throughput_limit_per_sec: 100
+    scenario:
+      profile: flaky-carrier
+      params: { success_rate: 0.9, error_mix: { ESME_RSYSERR: 1 } }
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "throughput-capped without cap", wantErr: config.ErrMissingParam, errHint: "throughput_cap_per_sec", tail: `    scenario:
+      profile: throughput-capped
+      latency: { distribution: fixed, params: { ms: 20 } }`},
 		{name: "observability port collides with smsc", wantErr: config.ErrDuplicatePort, errHint: "observability.http_port", yaml: `observability:
   http_port: 2775
 virtual_smscs:

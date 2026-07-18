@@ -22,6 +22,11 @@ var (
 	ErrUnknownProfile = errors.New("unknown scenario profile")
 	// ErrSeededWallclock flags clock: wallclock combined with a seed (chaos-only).
 	ErrSeededWallclock = errors.New("wallclock clock requires no seed")
+	// ErrSeededThroughputLimit flags throughput_limit_per_sec combined with a seed on a
+	// deterministic profile. The limit is a real-time wall-clock gate; on a seeded
+	// deterministic profile it would silently break invariant (a). Allowed without a
+	// seed (chaos), and with a seed only on the throughput profiles (already exempt).
+	ErrSeededThroughputLimit = errors.New("throughput_limit_per_sec requires no seed on a deterministic profile")
 	// ErrDuplicatePort flags two virtual SMSCs sharing a listen port.
 	ErrDuplicatePort = errors.New("duplicate virtual smsc port")
 	// ErrParamOutOfBounds flags a numeric parameter outside its allowed range.
@@ -120,6 +125,13 @@ func validateVirtualSMSC(vs *VirtualSMSCConfig) []error {
 		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].throughput_limit_per_sec %d below 1",
 			ErrParamOutOfBounds, vs.Name, *vs.ThroughputLimitPerSec))
 	}
+	// A wall-clock throughput limit on a seeded deterministic profile would silently
+	// break invariant (a) (the gate short-circuits before the PRNG draws). Chaos mode,
+	// or the already-exempt throughput profiles, are fine.
+	if seeded && vs.ThroughputLimitPerSec != nil && !throughputExempt(vs.Scenario.Profile) {
+		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q] profile %q",
+			ErrSeededThroughputLimit, vs.Name, vs.Scenario.Profile))
+	}
 	if vs.AddressRange != "" {
 		if _, err := regexp.Compile(vs.AddressRange); err != nil {
 			// Compiled value is discarded: Config stays pure data at S1. RE2 has no
@@ -159,6 +171,14 @@ func validateScenario(sc *ScenarioConfig, seeded bool) []error {
 	return errs
 }
 
+// throughputExempt reports whether a profile's decisions run through the real-time
+// wall-clock throughput gate rather than the seeded deterministic path — the two
+// throughput profiles. These are exempt from the byte-for-byte replay corpus, so a
+// seeded throughput_limit_per_sec is allowed on them (spec §6.2/§6.3).
+func throughputExempt(p Profile) bool {
+	return p == ProfileThrottlingCarrier || p == ProfileThroughputCapped
+}
+
 // validateScenarioParams enforces that only the knobs the profile exposes are set,
 // and that each set-and-exposed knob is in range.
 func validateScenarioParams(profile Profile, p ScenarioParams, spec profileSpec) []error {
@@ -169,6 +189,13 @@ func validateScenarioParams(profile Profile, p ScenarioParams, spec profileSpec)
 			errs = append(errs, fmt.Errorf("%w: scenario.params.%s not exposed by profile %q",
 				ErrParamNotExposed, knob, profile))
 		}
+	}
+
+	// The throughput profiles are defined by their cap: without it the gate is never
+	// built and the profile silently behaves as healthy, so the cap is required.
+	if throughputExempt(profile) && p.ThroughputCapPerSec == nil {
+		errs = append(errs, fmt.Errorf("%w: scenario.params.throughput_cap_per_sec required by profile %q",
+			ErrMissingParam, profile))
 	}
 
 	if p.SuccessRate != nil {

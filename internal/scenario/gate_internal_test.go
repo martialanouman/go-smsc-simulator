@@ -58,8 +58,11 @@ func TestGateOnCappedPaths(t *testing.T) {
 		}
 	}
 
-	// A vSMSC-level limit gates even an otherwise-deterministic profile.
-	if st := New(config.ScenarioConfig{Profile: config.ProfileHealthy, Latency: fixedLatency(10)}, i(1000)).NewBindState(&seed, "smsc", 1); st.gate == nil {
-		t.Errorf("throughput_limit_per_sec must attach a gate independently of the profile")
+	// A vSMSC-level limit gates even an otherwise-deterministic profile — but only in
+	// chaos mode (nil seed). Config validation rejects a seed + throughput_limit on a
+	// deterministic profile (it would break invariant a), so the seeded case is
+	// unreachable; the valid path is the unseeded, real-time one.
+	if st := New(config.ScenarioConfig{Profile: config.ProfileHealthy, Latency: fixedLatency(10)}, i(1000)).NewBindState(nil, "smsc", 1); st.gate == nil {
+		t.Errorf("throughput_limit_per_sec must attach a gate in chaos mode independently of the profile")
 	}
 }
