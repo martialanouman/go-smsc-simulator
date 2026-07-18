@@ -1,7 +1,7 @@
 # Step 003 — S3 · Moteur de scénario + injecteur de panne + déterminisme graîné
 
 > Plan de référence : `docs/plan-execution-simulateur-smsc.md` §7.
-> **Statut : ⏳ À FAIRE.** Pose l'**invariant (a) — déterminisme par bind**.
+> **Statut : ✅ LIVRÉ** (PR #5, `feat(s3)`). Pose l'**invariant (a) — déterminisme par bind**.
 
 ## Objectif
 

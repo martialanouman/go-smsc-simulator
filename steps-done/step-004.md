@@ -1,7 +1,7 @@
 # Step 004 — S4 · DLR asynchrones + horloge logique + flush de quiescence
 
 > Plan de référence : `docs/plan-execution-simulateur-smsc.md` §8.
-> **Statut : ⏳ À FAIRE.** Pose l'**invariant (d) — flush de quiescence** et le **Schedule Runner** (réutilisé à S5).
+> **Statut : ✅ LIVRÉ** (PR #6, `feat(s4)`). Pose l'**invariant (d) — flush de quiescence** et le **Schedule Runner** (réutilisé à S5).
 
 ## Objectif
 
