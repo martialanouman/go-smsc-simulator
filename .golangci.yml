@@ -19,6 +19,12 @@ linters:
     - nakedret
     - prealloc
   settings:
+    gosec:
+      excludes:
+        # G404: the simulator's determinism (CLAUDE.md invariant a) is BUILT on a
+        # seeded math/rand/v2 per bind — crypto/rand would make replay impossible.
+        # The weak-RNG warning is categorically inapplicable to this project.
+        - G404
     revive:
       rules:
         - name: exported

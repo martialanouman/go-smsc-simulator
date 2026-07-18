@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/martialanouman/go-smsc-simulator/internal/config"
 	"github.com/martialanouman/go-smsc-simulator/internal/recorder"
+	"github.com/martialanouman/go-smsc-simulator/internal/scenario"
 	"github.com/martialanouman/go-smsc-simulator/internal/smpp"
 )
 
@@ -33,6 +35,16 @@ const maxServedLatencyMS = 24 * 60 * 60 * 1000
 // of the valid range to avoid colliding with a client's from-one request sequence.
 const serverInitiatedSeq uint32 = 0x7FFFFFFF
 
+// Connection deadlines are robustness bounds, off the deterministic decision path
+// (they influence whether a connection lives, never a scenario Decision), so reading
+// the wall clock here is legitimate even in seeded mode. writeTimeout stops a client
+// that has stopped reading from wedging the writer goroutine; idleTimeout reaps a
+// half-open or silent bind (a live client's enquire_link keepalives reset it).
+const (
+	writeTimeout = 10 * time.Second
+	idleTimeout  = 5 * time.Minute
+)
+
 // session drives one client connection. The read goroutine (readLoop) owns all
 // session state and decodes/handles PDUs; a separate writer goroutine owns the
 // socket writes, draining the outbound channel. This split is what lets S4/S5 emit
@@ -45,11 +57,12 @@ type session struct {
 	logger *slog.Logger
 
 	// owned by readLoop:
-	state        sessionState
-	bindType     string
-	canSubmit    bool
-	systemID     string
-	perBindClock uint64
+	state         sessionState
+	bindType      string
+	canSubmit     bool
+	systemID      string
+	perBindClock  uint64
+	scenarioState *scenario.BindState // created at successful bind; nil until then
 
 	// bound is read by the closer goroutine (a different goroutine than readLoop) to
 	// decide whether a graceful shutdown warrants an unbind, so it is atomic.
@@ -77,7 +90,7 @@ func newSession(id uint64, conn net.Conn, v *virtualSMSC, quit <-chan struct{}) 
 // socket closes.
 func (s *session) run() {
 	done := make(chan struct{})
-	defer close(done)
+	closerDone := make(chan struct{})
 
 	// closer: on engine shutdown, unbind bound clients gracefully rather than dropping
 	// the TCP connection under them (CLAUDE.md: "unbind propre des binds sur SIGTERM").
@@ -85,6 +98,7 @@ func (s *session) run() {
 	// then flushes the queued unbind before closing the socket. Best-effort: it does not
 	// wait for unbind_resp.
 	go func() {
+		defer close(closerDone)
 		select {
 		case <-s.quit:
 			if s.bound.Load() {
@@ -99,8 +113,13 @@ func (s *session) run() {
 
 	s.readLoop()
 
-	// Teardown order matters: stop accepting writes, let the writer flush what is
-	// already queued, then close the socket and deregister the bind.
+	// Teardown order matters. First stop the closer and wait until it can no longer
+	// call send (a session can end on its own — a disconnect outcome, a client hang-up —
+	// while the engine shuts down concurrently; without this the closer could send on a
+	// closed outbound and panic). Only then close outbound, flush the writer, close the
+	// socket and deregister the bind.
+	close(done)
+	<-closerDone
 	close(s.outbound)
 	<-s.writerClosed
 	_ = s.conn.Close()
@@ -112,6 +131,9 @@ func (s *session) run() {
 func (s *session) writeLoop() {
 	defer close(s.writerClosed)
 	for b := range s.outbound {
+		// A write deadline per write: a client that stopped reading must not wedge this
+		// goroutine indefinitely — the deadline turns it into a write error and teardown.
+		_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 		if _, err := s.conn.Write(b); err != nil {
 			return
 		}
@@ -138,6 +160,12 @@ func (s *session) send(pdu *smpp.PDU) {
 // dropping the link, echoing the sequence number straight from the frame.
 func (s *session) readLoop() {
 	for {
+		// Re-arm the idle deadline each iteration: any PDU (including an enquire_link
+		// keepalive) resets it, so only a truly silent/half-open bind is reaped. The
+		// shutdown path sets a past deadline to unblock this read; that nearer deadline
+		// always wins over this future one.
+		_ = s.conn.SetReadDeadline(time.Now().Add(idleTimeout))
+
 		frame, err := smpp.ReadPDU(s.conn)
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) {
@@ -197,6 +225,14 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 		return
 	}
 
+	// dead-carrier in reject_bind mode turns everyone away, regardless of credentials
+	// (spec §6.1). This reuses the same ESME_RBINDFAIL + close seam as a bad credential.
+	if s.smsc.scenario.RejectBind() {
+		s.send(&smpp.PDU{CommandID: respID, CommandStatus: smpp.StatusBindFail, SequenceNumber: pdu.SequenceNumber})
+		s.state = stateClosed
+		return
+	}
+
 	creds := s.smsc.cfg.BindCredentials
 	idOK := subtle.ConstantTimeCompare([]byte(bind.SystemID), []byte(creds.SystemID)) == 1
 	pwOK := subtle.ConstantTimeCompare([]byte(bind.Password), []byte(creds.Password)) == 1
@@ -210,6 +246,7 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 	s.systemID = bind.SystemID
 	s.bindType = bindType
 	s.canSubmit = pdu.CommandID != smpp.BindReceiver
+	s.scenarioState = s.smsc.scenario.NewBindState(s.smsc.cfg.Seed, s.smsc.cfg.Name, s.id)
 	s.bound.Store(true)
 	s.smsc.binds.add(bindInfo{
 		id:          s.id,
@@ -227,8 +264,9 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 }
 
 // handleSubmit runs the submit_sm flow: advance the clocks, consult the scenario,
-// serve the latency, record the PDU and answer. At S2 the scenario is healthy, so
-// the outcome is always ESME_ROK; error/timeout/disconnect arrive at S3 (plan §7).
+// serve the latency, record the PDU and act on the decided outcome — success (ROK),
+// error (a non-ROK status), timeout (withhold the response) or disconnect (drop the
+// link). The flow order is the one in CLAUDE.md: decode → scenario → fault → answer.
 func (s *session) handleSubmit(pdu *smpp.PDU) {
 	if s.state != stateBound || !s.canSubmit {
 		s.send(&smpp.PDU{CommandID: smpp.SubmitSMResp, CommandStatus: smpp.StatusInvBndSts, SequenceNumber: pdu.SequenceNumber})
@@ -246,11 +284,14 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	// engine shuts down mid-latency we abandon the submit without advancing either
 	// clock, so logical_clock never counts a PDU the recorder never stored (plan §1.5).
 	tick := s.perBindClock + 1
-	decision := s.smsc.scenario.Evaluate(tick)
+	decision := s.smsc.scenario.Evaluate(s.scenarioState, tick)
 	if !s.serveLatency(decision.LatencyMS) {
 		return // engine shutting down: abandon this submit rather than sleep on
 	}
 
+	// Every committed outcome — including timeout and disconnect — advances both clocks
+	// and records the PDU, so the per-bind corpus stays reconstructable at the right
+	// tick and the recorder (the assertion surface) sees every received submit_sm.
 	s.perBindClock = tick
 	s.smsc.logicalClock.Add(1)
 
@@ -268,12 +309,33 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		PerBindClock: s.perBindClock,
 	})
 
-	s.send(&smpp.PDU{
-		CommandID:      smpp.SubmitSMResp,
-		CommandStatus:  smpp.StatusROK,
-		SequenceNumber: pdu.SequenceNumber,
-		Body:           &smpp.SubmitResp{MessageID: messageID},
-	})
+	switch decision.Outcome {
+	case scenario.OutcomeSuccess:
+		s.send(&smpp.PDU{
+			CommandID:      smpp.SubmitSMResp,
+			CommandStatus:  smpp.StatusROK,
+			SequenceNumber: pdu.SequenceNumber,
+			Body:           &smpp.SubmitResp{MessageID: messageID},
+		})
+	case scenario.OutcomeError:
+		// A non-ROK submit_sm_resp carries no message_id body.
+		s.send(&smpp.PDU{CommandID: smpp.SubmitSMResp, CommandStatus: decision.Status, SequenceNumber: pdu.SequenceNumber})
+	case scenario.OutcomeTimeout:
+		// Withhold the response entirely; readLoop keeps reading so the client can send
+		// more (its own response_timeout fires eventually).
+		return
+	case scenario.OutcomeDisconnect:
+		if decision.DisconnectWhen == config.DisconnectAfterResponse {
+			s.send(&smpp.PDU{
+				CommandID:      smpp.SubmitSMResp,
+				CommandStatus:  smpp.StatusROK,
+				SequenceNumber: pdu.SequenceNumber,
+				Body:           &smpp.SubmitResp{MessageID: messageID},
+			})
+		}
+		s.state = stateClosed // teardown closes the TCP connection
+		return
+	}
 }
 
 // serveLatency waits the served latency, returning false if the engine is shutting

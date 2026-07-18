@@ -272,6 +272,7 @@ Le catalogue de profils est **figé dans le code**. Le `.yml` sélectionne un pr
 - **Latence** : `fixed`, `uniform`, `normal` (borné à non-négatif), `spike` (référence basse avec rafales périodiques). En mode déterministe, l'intervalle `spike` est exprimé en ticks (`per_bind_clock`) ; en mode chaos, en durée réelle.
 - **Timeouts** : le simulateur retient `submit_sm_resp` au-delà du `response_timeout_ms` attendu — le timeout propre de la passerelle se déclenche naturellement.
 - **Déconnexions** : deux origines, toutes deux déclaratives — (a) intrinsèques au profil (ex. `flaky-carrier.disconnect_interval_ticks`), (b) explicites via `scheduled_disconnects` (à un tick précis, `scope` et `when` configurables). Aucune ne dépend d'un appel externe.
+- **Plafond de débit** : `throughput_cap_per_sec` (profil) et `throughput_limit_per_sec` (vSMSC) sont le seul mécanisme **réactif temps réel** — une fenêtre d'1 s sur l'horloge murale, y compris en mode graîné, car un débit « par seconde » n'a pas d'équivalent sur `per_bind_clock`. C'est ce qui exerce le throttling adaptatif temps réel de la passerelle (§6.4). Les profils `throttling-carrier`/`throughput-capped` sont donc **hors du corpus de rejeu** de l'invariant (a) : leur reproductibilité est celle des tests de charge (par bind + agrégation statistique, §6.3), pas un rejeu octet-pour-octet. L'invariant (a) est prouvé sur `flaky-carrier`.
 
 ### 6.3 Déterminisme & modes chaos
 

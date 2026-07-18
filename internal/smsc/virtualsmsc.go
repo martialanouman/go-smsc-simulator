@@ -37,7 +37,7 @@ func newVirtualSMSC(cfg config.VirtualSMSCConfig, ln net.Listener, logger *slog.
 		cfg:      cfg,
 		listener: ln,
 		recorder: recorder.New(cfg.PDUBufferSize),
-		scenario: scenario.New(cfg.Scenario),
+		scenario: scenario.New(cfg.Scenario, cfg.ThroughputLimitPerSec),
 		binds:    newBindRegistry(),
 		logger:   logger.With(slog.String("virtual_smsc", cfg.Name)),
 	}

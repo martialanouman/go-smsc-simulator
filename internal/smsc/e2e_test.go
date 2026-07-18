@@ -41,6 +41,61 @@ func healthyConfig(name string) config.VirtualSMSCConfig {
 	}
 }
 
+func pu64(v uint64) *uint64   { return &v }
+func pf64(v float64) *float64 { return &v }
+func pint(v int) *int         { return &v }
+
+// baseConfig is the shared skeleton for profile-specific fixtures: one virtual SMSC on
+// an ephemeral port with the given scenario and optional seed.
+func baseConfig(name string, seed *uint64, sc config.ScenarioConfig) config.VirtualSMSCConfig {
+	return config.VirtualSMSCConfig{
+		Name:            name,
+		Port:            0,
+		BindCredentials: config.BindCredentials{SystemID: testSystemID, Password: testPassword},
+		AddrTON:         1,
+		AddrNPI:         1,
+		PDUBufferSize:   100,
+		Seed:            seed,
+		Scenario:        sc,
+	}
+}
+
+func deadCarrierConfig(name string, mode config.DeadCarrierMode) config.VirtualSMSCConfig {
+	return baseConfig(name, pu64(1), config.ScenarioConfig{
+		Profile: config.ProfileDeadCarrier,
+		Params:  config.ScenarioParams{Mode: &mode},
+		Latency: config.LatencyConfig{Distribution: config.LatencyFixed, Params: config.LatencyParams{MS: pu64(0)}},
+	})
+}
+
+func throttlingConfig(name string, capPerSec int) config.VirtualSMSCConfig {
+	return baseConfig(name, pu64(1), config.ScenarioConfig{
+		Profile: config.ProfileThrottlingCarrier,
+		Params:  config.ScenarioParams{ThroughputCapPerSec: pint(capPerSec), ErrorCode: func() *config.SMPPErrorCode { c := config.ErrorCodeRThrottled; return &c }()},
+		Latency: config.LatencyConfig{Distribution: config.LatencyFixed, Params: config.LatencyParams{MS: pu64(0)}},
+	})
+}
+
+func slowConfig(name string) config.VirtualSMSCConfig {
+	return baseConfig(name, pu64(1), config.ScenarioConfig{
+		Profile: config.ProfileSlowCarrier,
+		Latency: config.LatencyConfig{Distribution: config.LatencyUniform, Params: config.LatencyParams{MinMS: pu64(2000), MaxMS: pu64(4000)}},
+	})
+}
+
+// flakyConfig builds a seeded flaky-carrier with zero latency (fast replay) and no
+// periodic disconnect, so the synchronous client can drive a fixed submit sequence.
+func flakyConfig(name string, seed uint64) config.VirtualSMSCConfig {
+	return baseConfig(name, pu64(seed), config.ScenarioConfig{
+		Profile: config.ProfileFlakyCarrier,
+		Params: config.ScenarioParams{
+			SuccessRate: pf64(0.8),
+			ErrorMix:    map[config.SMPPErrorCode]uint{config.ErrorCodeRSysErr: 1, config.ErrorCodeRSubmitFail: 1},
+		},
+		Latency: config.LatencyConfig{Distribution: config.LatencyFixed, Params: config.LatencyParams{MS: pu64(0)}},
+	})
+}
+
 // harness starts an engine and its read-only surface, returning the SMPP dial
 // address of the named virtual SMSC and the surface's base URL.
 type harness struct {
@@ -49,11 +104,21 @@ type harness struct {
 	baseURL  string
 }
 
+// start boots a single healthy virtual SMSC — the default for tests that only need a
+// working endpoint.
 func start(t *testing.T, name string) harness {
 	t.Helper()
+	return startWith(t, healthyConfig(name))
+}
 
+// startWith boots a single virtual SMSC from an arbitrary config, so profile-specific
+// tests can drive flaky / dead / throttling / slow behaviour end-to-end.
+func startWith(t *testing.T, cfg config.VirtualSMSCConfig) harness {
+	t.Helper()
+
+	name := cfg.Name
 	logger := observability.NewLogger(io.Discard, slog.LevelInfo)
-	engine, err := smsc.New([]config.VirtualSMSCConfig{healthyConfig(name)}, logger)
+	engine, err := smsc.New([]config.VirtualSMSCConfig{cfg}, logger)
 	if err != nil {
 		t.Fatalf("smsc.New: %v", err)
 	}
@@ -222,6 +287,123 @@ func TestE2E_GracefulShutdownUnbindsBoundClients(t *testing.T) {
 
 	if pdu := client.Read(); pdu.CommandID != smpp.Unbind {
 		t.Fatalf("on graceful shutdown got %s, want a server-initiated unbind", pdu.CommandID)
+	}
+}
+
+// TestE2E_DeadCarrierRejectsBind: dead-carrier in reject_bind mode answers every bind
+// with ESME_RBINDFAIL and registers nothing, regardless of credentials.
+func TestE2E_DeadCarrierRejectsBind(t *testing.T) {
+	t.Parallel()
+
+	h := startWith(t, deadCarrierConfig("carrier-dead-reject", config.DeadCarrierRejectBind))
+	client := smpptest.Dial(t, h.smppAddr)
+
+	if pdu := client.BindTransceiver(testSystemID, testPassword); pdu.CommandStatus != smpp.StatusBindFail {
+		t.Fatalf("dead-carrier bind status = %d, want ESME_RBINDFAIL", pdu.CommandStatus)
+	}
+	var binds []observability.BindView
+	decodeGET(t, h.baseURL+"/v1/virtual-smscs/carrier-dead-reject/binds", &binds)
+	if len(binds) != 0 {
+		t.Fatalf("rejected bind must not be registered, got %d", len(binds))
+	}
+}
+
+// TestE2E_DeadCarrierTimeoutAll: dead-carrier in timeout_all mode accepts the bind but
+// withholds every submit_sm_resp.
+func TestE2E_DeadCarrierTimeoutAll(t *testing.T) {
+	t.Parallel()
+
+	h := startWith(t, deadCarrierConfig("carrier-dead-timeout", config.DeadCarrierTimeoutAll))
+	client := smpptest.Dial(t, h.smppAddr)
+	if pdu := client.BindTransceiver(testSystemID, testPassword); pdu.CommandStatus != smpp.StatusROK {
+		t.Fatalf("timeout_all bind status = %d, want ESME_ROK", pdu.CommandStatus)
+	}
+
+	client.SubmitAsync("33600000000", "33611111111", "hello")
+	client.ExpectNoResponse(500 * time.Millisecond)
+}
+
+// TestE2E_ThrottlingBeyondCap: with a cap of one per second, the first submit succeeds
+// and the burst that follows (well within the same second) is throttled.
+func TestE2E_ThrottlingBeyondCap(t *testing.T) {
+	t.Parallel()
+
+	h := startWith(t, throttlingConfig("carrier-throttle", 1))
+	client := smpptest.Dial(t, h.smppAddr)
+	client.BindTransceiver(testSystemID, testPassword)
+
+	if got := client.SubmitStatus("33600000000", "33611111111", "one"); got != smpp.StatusROK {
+		t.Fatalf("first submit under cap = %d, want ESME_ROK", got)
+	}
+	for k := 0; k < 5; k++ {
+		if got := client.SubmitStatus("33600000000", "33611111111", "more"); got != smpp.StatusThrottled {
+			t.Fatalf("over-cap submit = %d, want ESME_RTHROTTLED", got)
+		}
+	}
+}
+
+// TestE2E_SlowCarrierBoundedLatency: a slow-carrier submit succeeds after a real delay
+// inside the 2–4 s window. This exercises the actual served latency, so it is skipped
+// in -short.
+func TestE2E_SlowCarrierBoundedLatency(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("slow-carrier serves multi-second latency; skipped in -short")
+	}
+
+	h := startWith(t, slowConfig("carrier-slow"))
+	client := smpptest.Dial(t, h.smppAddr)
+	client.BindTransceiver(testSystemID, testPassword)
+
+	// The response can take up to 4 s, past the client's default read timeout, so read
+	// it with a wider deadline.
+	begin := time.Now()
+	client.SubmitAsync("33600000000", "33611111111", "slow")
+	pdu := client.ReadWithin(6 * time.Second)
+	elapsed := time.Since(begin)
+
+	if pdu.CommandStatus != smpp.StatusROK {
+		t.Fatalf("slow-carrier status = %d, want ESME_ROK", pdu.CommandStatus)
+	}
+	// Lower bound loosened slightly for scheduling slack; upper bound guards the cap.
+	if elapsed < 1900*time.Millisecond || elapsed > 4500*time.Millisecond {
+		t.Fatalf("slow-carrier latency %v outside ~[2s,4s]", elapsed)
+	}
+}
+
+// TestE2E_FlakyDeterministicReplay corroborates invariant (a) on the wire: two
+// independent engines with the same seed and same virtual-SMSC name produce an
+// identical per-bind sequence of statuses and message ids for the same submits.
+func TestE2E_FlakyDeterministicReplay(t *testing.T) {
+	t.Parallel()
+
+	const seed = uint64(20260718)
+	const n = 40
+
+	run := func() [][2]string {
+		// Both runs use the SAME name: the seed derivation keys on it, so a different
+		// name would (correctly) yield a different stream.
+		h := startWith(t, flakyConfig("carrier-flaky", seed))
+		client := smpptest.Dial(t, h.smppAddr)
+		client.BindTransceiver(testSystemID, testPassword)
+
+		out := make([][2]string, n)
+		for k := 0; k < n; k++ {
+			pdu := client.Submit("33600000000", "33611111111", "msg")
+			id := ""
+			if r, ok := pdu.Body.(*smpp.SubmitResp); ok {
+				id = r.MessageID
+			}
+			out[k] = [2]string{strconv.FormatUint(uint64(pdu.CommandStatus), 10), id}
+		}
+		return out
+	}
+
+	first, second := run(), run()
+	for k := range first {
+		if first[k] != second[k] {
+			t.Fatalf("replay diverged at submit %d: %v vs %v", k, first[k], second[k])
+		}
 	}
 }
 
