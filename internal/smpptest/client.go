@@ -9,6 +9,7 @@
 package smpptest
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -77,6 +78,81 @@ func (c *Client) Submit(source, dest, message string) *smpp.PDU {
 	})
 }
 
+// SubmitStatus sends a submit_sm and returns just its response command_status, for
+// terse assertions on the outcome (e.g. ESME_RTHROTTLED beyond a cap).
+func (c *Client) SubmitStatus(source, dest, message string) smpp.CommandStatus {
+	c.t.Helper()
+	return c.Submit(source, dest, message).CommandStatus
+}
+
+// SubmitAsync writes a submit_sm and returns its sequence number WITHOUT reading a
+// response — for tests that expect a withheld response (timeout) or a disconnect,
+// where the synchronous Submit would block until the io timeout and fail the test.
+func (c *Client) SubmitAsync(source, dest, message string) uint32 {
+	c.t.Helper()
+
+	seq := c.nextSeq()
+	b, err := smpp.Encode(&smpp.PDU{
+		CommandID:      smpp.SubmitSM,
+		SequenceNumber: seq,
+		Body: &smpp.Message{
+			SourceAddrTON: 1, SourceAddrNPI: 1, SourceAddr: source,
+			DestAddrTON: 1, DestAddrNPI: 1, DestAddr: dest,
+			ShortMessage: []byte(message),
+		},
+	})
+	if err != nil {
+		c.t.Fatalf("encode submit_sm: %v", err)
+	}
+	if err := c.conn.SetWriteDeadline(time.Now().Add(ioTimeout)); err != nil {
+		c.t.Fatalf("set write deadline: %v", err)
+	}
+	if _, err := c.conn.Write(b); err != nil {
+		c.t.Fatalf("write submit_sm: %v", err)
+	}
+	return seq
+}
+
+// ExpectNoResponse asserts that no PDU arrives within d — the withheld-response
+// (timeout) case. It fails if a PDU is received or the read fails for any reason other
+// than the deadline.
+func (c *Client) ExpectNoResponse(d time.Duration) {
+	c.t.Helper()
+
+	if err := c.conn.SetReadDeadline(time.Now().Add(d)); err != nil {
+		c.t.Fatalf("set read deadline: %v", err)
+	}
+	frame, err := smpp.ReadPDU(c.conn)
+	if err == nil {
+		if pdu, derr := smpp.Decode(frame); derr == nil {
+			c.t.Fatalf("expected no response, got %s", pdu.CommandID)
+		}
+		c.t.Fatalf("expected no response, got an undecodable frame")
+	}
+	var ne net.Error
+	if !errors.As(err, &ne) || !ne.Timeout() {
+		c.t.Fatalf("expected a read timeout (withheld response), got %v", err)
+	}
+}
+
+// ExpectClosed asserts the server has closed the connection: the next read fails with
+// something other than a timeout (EOF, reset, use-of-closed).
+func (c *Client) ExpectClosed() {
+	c.t.Helper()
+
+	if err := c.conn.SetReadDeadline(time.Now().Add(ioTimeout)); err != nil {
+		c.t.Fatalf("set read deadline: %v", err)
+	}
+	if _, err := smpp.ReadPDU(c.conn); err != nil {
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			c.t.Fatalf("expected a closed connection, got a read timeout")
+		}
+		return // any non-timeout read error means the peer closed
+	}
+	c.t.Fatalf("expected a closed connection, got a PDU")
+}
+
 // EnquireLink sends an enquire_link and returns the response PDU.
 func (c *Client) EnquireLink() *smpp.PDU {
 	c.t.Helper()
@@ -94,6 +170,25 @@ func (c *Client) Unbind() *smpp.PDU {
 func (c *Client) Read() *smpp.PDU {
 	c.t.Helper()
 	return c.read()
+}
+
+// ReadWithin reads one PDU under a caller-chosen deadline, for responses that take
+// longer than the default io timeout (e.g. a slow-carrier's multi-second latency).
+func (c *Client) ReadWithin(d time.Duration) *smpp.PDU {
+	c.t.Helper()
+
+	if err := c.conn.SetReadDeadline(time.Now().Add(d)); err != nil {
+		c.t.Fatalf("set read deadline: %v", err)
+	}
+	frame, err := smpp.ReadPDU(c.conn)
+	if err != nil {
+		c.t.Fatalf("read pdu: %v", err)
+	}
+	pdu, err := smpp.Decode(frame)
+	if err != nil {
+		c.t.Fatalf("decode pdu: %v", err)
+	}
+	return pdu
 }
 
 // roundTrip writes a request and reads the single PDU the server sends back.
