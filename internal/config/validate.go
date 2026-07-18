@@ -125,6 +125,11 @@ func validateVirtualSMSC(vs *VirtualSMSCConfig) []error {
 		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].throughput_limit_per_sec %d below 1",
 			ErrParamOutOfBounds, vs.Name, *vs.ThroughputLimitPerSec))
 	}
+	if vs.QuiescenceFlushMs != nil &&
+		(*vs.QuiescenceFlushMs < quiescenceFlushMinMs || *vs.QuiescenceFlushMs > quiescenceFlushMaxMs) {
+		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].quiescence_flush_ms %d not in [%d,%d]",
+			ErrParamOutOfBounds, vs.Name, *vs.QuiescenceFlushMs, quiescenceFlushMinMs, quiescenceFlushMaxMs))
+	}
 	// A wall-clock throughput limit on a seeded deterministic profile would silently
 	// break invariant (a) (the gate short-circuits before the PRNG draws). Chaos mode,
 	// or the already-exempt throughput profiles, are fine.

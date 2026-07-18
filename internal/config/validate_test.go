@@ -166,6 +166,10 @@ func TestValidate_SchemaCoherence(t *testing.T) {
 		{name: "throughput-capped without cap", wantErr: config.ErrMissingParam, errHint: "throughput_cap_per_sec", tail: `    scenario:
       profile: throughput-capped
       latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "quiescence_flush_ms zero", wantErr: config.ErrParamOutOfBounds, errHint: "quiescence_flush_ms", tail: `    quiescence_flush_ms: 0
+    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }`},
 		{name: "observability port collides with smsc", wantErr: config.ErrDuplicatePort, errHint: "observability.http_port", yaml: `observability:
   http_port: 2775
 virtual_smscs:
@@ -253,6 +257,12 @@ func TestLoad_ParsesFullSchema(t *testing.T) {
 	}
 	if vs.ThroughputLimitPerSec == nil || *vs.ThroughputLimitPerSec != 5000 {
 		t.Errorf("ThroughputLimitPerSec = %v, want non-nil 5000", vs.ThroughputLimitPerSec)
+	}
+	if vs.QuiescenceFlushMs == nil || *vs.QuiescenceFlushMs != 100 {
+		t.Errorf("QuiescenceFlushMs = %v, want non-nil 100", vs.QuiescenceFlushMs)
+	}
+	if got := vs.EffectiveQuiescenceFlushMs(); got != 100 {
+		t.Errorf("EffectiveQuiescenceFlushMs = %d, want 100", got)
 	}
 	if !vs.TLS.Enabled {
 		t.Error("TLS.Enabled = false, want true")

@@ -23,10 +23,27 @@ type VirtualSMSCConfig struct {
 	Seed                  *uint64               `yaml:"seed"` // nil = chaos/unseeded mode
 	PDUBufferSize         int                   `yaml:"pdu_buffer_size"`
 	ThroughputLimitPerSec *int                  `yaml:"throughput_limit_per_sec"` // nil = no limit
+	QuiescenceFlushMs     *uint64               `yaml:"quiescence_flush_ms"`      // nil = default (QuiescenceFlushDefaultMs)
 	Scenario              ScenarioConfig        `yaml:"scenario"`
 	MOInjection           *MOInjectionConfig    `yaml:"mo_injection"` // nil = no MO injection
 	ScheduledDisconnects  []ScheduledDisconnect `yaml:"scheduled_disconnects"`
 	ScheduledTransitions  []ScheduledTransition `yaml:"scheduled_transitions"`
+}
+
+// QuiescenceFlushDefaultMs is the default idle window, in milliseconds, after which a
+// bind's pending tick-scheduled events (DLRs at S4; MO/disconnects/transitions at S5)
+// are flushed even though no new submit_sm has advanced the clock (spec §6.3, invariant
+// d). Overridable per virtual SMSC via quiescence_flush_ms.
+const QuiescenceFlushDefaultMs uint64 = 250
+
+// EffectiveQuiescenceFlushMs returns the configured quiescence-flush window, or the
+// default when quiescence_flush_ms is absent. Kept here so the default lives in one place
+// and Config stays pure data (the caller converts the millisecond count to a duration).
+func (vs VirtualSMSCConfig) EffectiveQuiescenceFlushMs() uint64 {
+	if vs.QuiescenceFlushMs != nil {
+		return *vs.QuiescenceFlushMs
+	}
+	return QuiescenceFlushDefaultMs
 }
 
 // BindCredentials is the system_id/password a client must present to bind. The

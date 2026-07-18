@@ -91,6 +91,7 @@ virtual_smscs:
     seed: 42                 # set => deterministic mode; omit => unseeded/chaos mode
     pdu_buffer_size: 10000   # ring buffer capacity; raise for full load-test PDU inspection
     throughput_limit_per_sec: 5000   # nullable; enforced independently of the profile
+    quiescence_flush_ms: 250   # nullable; idle window before pending tick-scheduled events flush (default 250)
 
     scenario:
       profile: throttling-carrier      # MUST be one of the built-in profiles (see §6.1). No arbitrary rules.
@@ -136,6 +137,7 @@ Notes de sémantique :
 - `scenario.profile` doit appartenir au catalogue figé (§6.1) ; une valeur inconnue est une **erreur de validation au chargement** (fail-fast, le processus refuse de démarrer).
 - Tous les mécanismes temporels référencent le **tick logique par bind** (`per_bind_clock`) dès qu'un `seed` est présent ; `clock: wallclock` n'est accepté que sans `seed` (mode chaos).
 - `mo_injection`, `scheduled_disconnects` et `scheduled_transitions` sont les trois formes déclaratives des actions temporelles — chacune ancrée à un tick, donc reproductible.
+- `quiescence_flush_ms` (nullable, défaut 250) règle la fenêtre d'inactivité au bout de laquelle un bind draine ses événements planifiés en ticks (DLR, puis MO/déconnexions/transitions) quand le trafic cesse (§6.3, invariant d) ; le déterminisme de contenu/ordre est préservé, seule la latence murale absolue d'un événement au repos varie.
 - Le `.yml` est validé intégralement au démarrage (schéma, cohérence `seed`/`clock`, profils connus) avant d'ouvrir le moindre port SMPP.
 
 ### 3.2 État d'exécution (en mémoire, borné, par SMSC virtuel)
