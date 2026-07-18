@@ -199,7 +199,7 @@ issues:
   max-same-issues: 0
 ```
 
-> **Schéma v2.** Ce fichier suit le schéma **golangci-lint v2** (version épinglée : `v2.3.0`, cf. `Makefile`). Différences avec le v1, si tu croises une ancienne config : la clé `version: "2"` est obligatoire ; `gofmt`/`goimports` sont des **formatters**, plus des linters, et vivent dans un bloc `formatters` séparé ; `linters-settings` devient `linters.settings` ; `local-prefixes` prend une **liste**, plus une chaîne. Une config v1 est rejetée au chargement par la v2.
+> **Schéma v2.** Ce fichier suit le schéma **golangci-lint v2** (version épinglée : `v2.12.2`, cf. `Makefile`). Différences avec le v1, si tu croises une ancienne config : la clé `version: "2"` est obligatoire ; `gofmt`/`goimports` sont des **formatters**, plus des linters, et vivent dans un bloc `formatters` séparé ; `linters-settings` devient `linters.settings` ; `local-prefixes` prend une **liste**, plus une chaîne. Une config v1 est rejetée au chargement par la v2.
 
 *(Pas de `bodyclose`/`rowserrcheck`/`sqlclosecheck`/`noctx` : ni SQL, ni client HTTP sortant sur les chemins chauds.)*
 
