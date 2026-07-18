@@ -1,0 +1,59 @@
+# GoReleaser config (schema v2). Runs from the CI release job once a vX.Y.Z tag
+# has been pushed to main; verify it locally with `make snapshot`.
+# Docs: https://goreleaser.com — pinned tool version lives in the Makefile.
+version: 2
+
+project_name: smsc-simulator
+
+builds:
+  - id: smsc-simulator
+    main: ./cmd/smsc-simulator
+    binary: smsc-simulator
+    # A statically linked binary is the whole point of the distribution artifact
+    # (spec §6.4): no libc to match on the target CI runner.
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # {{.Version}} is the tag without its leading v. -X main.version writes the
+    # same symbol `make build` stamps, so a released binary reports its exact tag
+    # under --version.
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: smsc-simulator
+    # Lowercase os/arch keeps the asset names predictable for CI scripts, e.g.
+    # smsc-simulator_linux_amd64.tar.gz.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Release notes are grouped by Conventional Commit type. Merges to main are
+# squashed, so each main commit is a PR title following the convention.
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))?!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]]+\))?!?:.+$'
+      order: 1
+    - title: Others
+      order: 999
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'

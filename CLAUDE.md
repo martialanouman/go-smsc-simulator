@@ -59,6 +59,7 @@ Tout le code métier vit sous `internal/`. Interfaces définies côté consommat
 - **Le PDU Recorder retient le contenu volontairement** (c'est la fonctionnalité d'assertion). Mais les logs `slog` ne déversent pas le contenu brut au niveau `info` — le contenu s'inspecte via `GET /received-pdus`.
 - **Labels Prometheus bornés** : `virtual_smsc`, `bind_type`, `outcome`, `scenario`. **Jamais** de MSISDN, `message_id` ou contenu en label.
 - **Versions & API des bibliothèques : TOUJOURS via Context7 (`ctx7`).** Avant d'ajouter ou d'utiliser l'API d'une bibliothèque (yaml.v3, prometheus/client_golang, google/uuid), appelle le skill `ctx7` pour la doc à jour et la bonne version. Ne devine JAMAIS un numéro de version ni une signature depuis la mémoire.
+- **Commits : Conventional Commits, message en anglais.** Format `type(scope): description` (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `perf`, `build`, `style`, `revert`) — **message entièrement en anglais** (exception à la prose française, cohérente avec « code & identifiants en anglais »). Le dépôt merge en **squash** : le **titre de PR** devient le commit sur `main` et **pilote la version** (`fix`→patch, `feat`→minor, `!`/`BREAKING CHANGE`→major). Un titre non conforme est refusé par le job CI `pr-title`. Chaque merge sur `main` → tag semver + GitHub Release automatiques (voir `.github/workflows/ci.yml` job `release`, `.goreleaser.yml`). L'ancien id de jalon passe en scope : `feat(s3): …`.
 
 ## Les 4 invariants (tests bloquants, verts à vie)
 
