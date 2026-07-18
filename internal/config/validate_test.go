@@ -102,6 +102,12 @@ func TestValidate_SchemaCoherence(t *testing.T) {
       dlr:
         delay: { distribution: fixed, ticks: 5 }
         outcome_weights: { delivered: 0, failed: 0, expired: 0 }`},
+		{name: "dlr fixed ticks zero", wantErr: config.ErrParamOutOfBounds, errHint: "ticks", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+      dlr:
+        delay: { distribution: fixed, ticks: 0 }
+        outcome_weights: { delivered: 1 }`},
 		{name: "latency missing param", wantErr: config.ErrMissingParam, errHint: "max_ms", tail: `    scenario:
       profile: healthy
       latency: { distribution: uniform, params: { min_ms: 10 } }`},

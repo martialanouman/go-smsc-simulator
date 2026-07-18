@@ -391,6 +391,12 @@ func validateDLR(dlr *DLRConfig, seeded bool) []error {
 	case dlr.Delay.Ticks == nil:
 		errs = append(errs, fmt.Errorf("%w: scenario.dlr.delay.ticks for distribution fixed",
 			ErrMissingParam))
+	case *dlr.Delay.Ticks < 1:
+		// A zero delay would fire the DLR on the origin tick itself — emitted synchronously
+		// within the same submit rather than asynchronously. Require at least one tick, as
+		// the sibling tick knobs (disconnect_interval_ticks, interval_ticks) do.
+		errs = append(errs, fmt.Errorf("%w: scenario.dlr.delay.ticks %d below 1",
+			ErrParamOutOfBounds, *dlr.Delay.Ticks))
 	}
 	// min_ticks/max_ticks belong to the reserved uniform delay; flag them as unused
 	// under fixed, mirroring the exposed-knob discipline elsewhere.
