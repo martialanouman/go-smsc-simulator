@@ -37,13 +37,57 @@ const (
 )
 
 // Decision is the engine's verdict for one submit_sm: the outcome, the wire status to
-// use on OutcomeError, the latency (ms) to serve before responding, and — on
-// OutcomeDisconnect — whether to answer before dropping the link.
+// use on OutcomeError, the latency (ms) to serve before responding, on OutcomeDisconnect
+// whether to answer before dropping the link, and — only when the outcome is success and
+// the profile configures DLRs — the DLR to schedule.
 type Decision struct {
 	Outcome        Outcome
 	Status         smpp.CommandStatus
 	LatencyMS      uint64
 	DisconnectWhen config.DisconnectWhen
+	DLR            *DLRPlan // non-nil only on a successful submit under a DLR-enabled profile
+}
+
+// DLROutcome is the resolved state of a scheduled delivery receipt.
+type DLROutcome int
+
+// DLROutcome values, mirroring the outcome_weights knobs (spec §3.1).
+const (
+	// DLRDelivered reports the message delivered (stat:DELIVRD, message_state DELIVERED).
+	DLRDelivered DLROutcome = iota
+	// DLRFailed reports the message undeliverable (stat:UNDELIV, message_state UNDELIVERABLE).
+	DLRFailed
+	// DLRExpired reports the message expired (stat:EXPIRED, message_state EXPIRED).
+	DLRExpired
+)
+
+// String renders the outcome as the lowercase weight name, for logs and assertions.
+func (o DLROutcome) String() string {
+	switch o {
+	case DLRDelivered:
+		return "delivered"
+	case DLRFailed:
+		return "failed"
+	case DLRExpired:
+		return "expired"
+	default:
+		return "unknown"
+	}
+}
+
+// DLRPlan is the scheduled delivery receipt for a successful submit: the resolved
+// outcome and the tick offset (from the origin submit's per_bind_clock) at which the
+// deliver_sm should fire. The delay is fixed ticks at S4 (uniform reserved).
+type DLRPlan struct {
+	Outcome    DLROutcome
+	DelayTicks uint64
+}
+
+// weightedDLR is one entry of the pre-flattened outcome_weights: an outcome and the
+// running cumulative weight up to and including it, so a single PRNG draw selects it.
+type weightedDLR struct {
+	outcome DLROutcome
+	cum     uint64
 }
 
 // weightedCode is one entry of the pre-flattened error_mix: a wire status and the
@@ -63,6 +107,11 @@ type Engine struct {
 	latency     config.LatencyConfig
 	errorMix    []weightedCode // pre-flattened + sorted; deterministic weighted pick
 	limitPerSec *int           // vSMSC throughput_limit_per_sec, enforced independently
+
+	// DLR generation, nil/zero when scenario.dlr is absent.
+	dlrEnabled    bool
+	dlrMix        []weightedDLR // pre-flattened outcome_weights; deterministic weighted pick
+	dlrDelayTicks uint64        // fixed tick offset from the origin submit
 }
 
 // BindState is the per-bind mutable state: the seeded PRNG and, when the profile or a
@@ -77,13 +126,21 @@ type BindState struct {
 // New builds the engine for a scenario config. limitPerSec is the vSMSC-level
 // throughput_limit_per_sec (nil when unset), enforced independently of the profile.
 func New(cfg config.ScenarioConfig, limitPerSec *int) *Engine {
-	return &Engine{
+	e := &Engine{
 		profile:     cfg.Profile,
 		params:      cfg.Params,
 		latency:     cfg.Latency,
 		errorMix:    buildErrorMix(cfg.Params.ErrorMix),
 		limitPerSec: limitPerSec,
 	}
+	if cfg.DLR != nil {
+		e.dlrEnabled = true
+		e.dlrMix = buildDLRMix(cfg.DLR.OutcomeWeights)
+		if cfg.DLR.Delay.Ticks != nil { // validation guarantees this under the fixed delay
+			e.dlrDelayTicks = *cfg.DLR.Delay.Ticks
+		}
+	}
+	return e
 }
 
 // NewBindState creates the per-bind state for a newly bound session. With a seed the
@@ -110,8 +167,21 @@ func (e *Engine) RejectBind() bool {
 		e.params.Mode != nil && *e.params.Mode == config.DeadCarrierRejectBind
 }
 
-// Evaluate returns the decision for the submit_sm at tick t on the given bind.
+// Evaluate returns the decision for the submit_sm at tick t on the given bind. On a
+// successful submit under a DLR-enabled profile it also resolves the DLR to schedule,
+// drawing its outcome HERE — as the last draw of the tick, a fixed position that keeps
+// the seeded replay total (invariant a). Error/timeout/disconnect never draw a DLR.
 func (e *Engine) Evaluate(st *BindState, t uint64) Decision {
+	d := e.evaluate(st, t)
+	if e.dlrEnabled && d.Outcome == OutcomeSuccess {
+		d.DLR = &DLRPlan{Outcome: e.pickDLROutcome(st.rng), DelayTicks: e.dlrDelayTicks}
+	}
+	return d
+}
+
+// evaluate resolves the submit outcome and served latency for tick t, before any DLR is
+// planned. Split from Evaluate so the DLR draw stays a single, well-defined last step.
+func (e *Engine) evaluate(st *BindState, t uint64) Decision {
 	// Throughput gate first — the one wall-clock, non-deterministic path. It fires for
 	// throttling-carrier / throughput-capped (profile cap) and for any profile carrying
 	// a vSMSC throughput_limit_per_sec. Profiles without a cap have gate==nil and skip
@@ -177,6 +247,47 @@ func (e *Engine) throttleStatus() smpp.CommandStatus {
 		return statusFor(*e.params.ErrorCode)
 	}
 	return smpp.StatusThrottled
+}
+
+// buildDLRMix flattens the delivered/failed/expired weights into a cumulative slice in
+// a fixed order (delivered, failed, expired), so a single PRNG draw selects an outcome
+// reproducibly. Unlike error_mix there is no map to defend against — the weights are a
+// fixed struct — but the cumulative form keeps the pick a single draw. Zero-weight
+// outcomes are dropped so they can never be selected.
+func buildDLRMix(w config.DLROutcomeWeights) []weightedDLR {
+	entries := []struct {
+		outcome DLROutcome
+		weight  uint
+	}{
+		{DLRDelivered, w.Delivered},
+		{DLRFailed, w.Failed},
+		{DLRExpired, w.Expired},
+	}
+	out := make([]weightedDLR, 0, len(entries))
+	var cum uint64
+	for _, en := range entries {
+		if en.weight == 0 {
+			continue
+		}
+		cum += uint64(en.weight)
+		out = append(out, weightedDLR{outcome: en.outcome, cum: cum})
+	}
+	return out
+}
+
+// pickDLROutcome draws one weighted DLR outcome from the pre-flattened outcome_weights.
+func (e *Engine) pickDLROutcome(r *rand.Rand) DLROutcome {
+	if len(e.dlrMix) == 0 {
+		return DLRDelivered // validated non-zero sum makes this unreachable: defensive
+	}
+	total := e.dlrMix[len(e.dlrMix)-1].cum
+	n := r.Uint64N(total)
+	for _, w := range e.dlrMix {
+		if n < w.cum {
+			return w.outcome
+		}
+	}
+	return e.dlrMix[len(e.dlrMix)-1].outcome // unreachable: n < total always matches
 }
 
 // pickErrorStatus draws one weighted error code from the pre-flattened error_mix.
