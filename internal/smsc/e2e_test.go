@@ -407,6 +407,33 @@ func TestE2E_FlakyDeterministicReplay(t *testing.T) {
 	}
 }
 
+// TestE2E_ShutdownNotDelayedByInFlightSubmit guards a regression: the per-iteration
+// idle read deadline must not clobber the shutdown deadline. With a submit in flight
+// (server mid-latency) when the engine shuts down, teardown must still be prompt —
+// not stalled until idleTimeout.
+func TestE2E_ShutdownNotDelayedByInFlightSubmit(t *testing.T) {
+	t.Parallel()
+
+	h := startWith(t, slowConfig("carrier-slow-shutdown"))
+	client := smpptest.Dial(t, h.smppAddr)
+	client.BindTransceiver(testSystemID, testPassword)
+
+	// Put a submit in flight: the server is now sleeping on the 2–4 s slow-carrier
+	// latency when we shut down.
+	client.SubmitAsync("33600000000", "33611111111", "slow")
+	time.Sleep(200 * time.Millisecond) // let the server reach serveLatency
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	begin := time.Now()
+	if err := h.engine.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown during in-flight submit: %v", err)
+	}
+	if d := time.Since(begin); d > 2*time.Second {
+		t.Fatalf("Shutdown took %v — the idle read deadline stalled teardown", d)
+	}
+}
+
 func decodeGET(t *testing.T, url string, dst any) {
 	t.Helper()
 

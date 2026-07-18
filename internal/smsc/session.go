@@ -101,10 +101,13 @@ func (s *session) run() {
 		defer close(closerDone)
 		select {
 		case <-s.quit:
+			// Unblock the read first, then queue the unbind: if the writer is wedged, the
+			// send can block up to writeTimeout, and we must not delay readLoop's exit by
+			// that long. Teardown still flushes the queued unbind before closing the socket.
+			_ = s.conn.SetReadDeadline(time.Now())
 			if s.bound.Load() {
 				s.send(&smpp.PDU{CommandID: smpp.Unbind, SequenceNumber: serverInitiatedSeq})
 			}
-			_ = s.conn.SetReadDeadline(time.Now())
 		case <-done:
 		}
 	}()
@@ -160,6 +163,15 @@ func (s *session) send(pdu *smpp.PDU) {
 // dropping the link, echoing the sequence number straight from the frame.
 func (s *session) readLoop() {
 	for {
+		// Exit promptly on shutdown instead of re-arming a far-future idle deadline that
+		// would clobber the closer's SetReadDeadline(now) and leave this loop blocked
+		// until idleTimeout — stalling graceful shutdown (which joins this goroutine).
+		select {
+		case <-s.quit:
+			return
+		default:
+		}
+
 		// Re-arm the idle deadline each iteration: any PDU (including an enquire_link
 		// keepalive) resets it, so only a truly silent/half-open bind is reaped. The
 		// shutdown path sets a past deadline to unblock this read; that nearer deadline
