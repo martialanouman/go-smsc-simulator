@@ -407,10 +407,14 @@ func TestE2E_FlakyDeterministicReplay(t *testing.T) {
 	}
 }
 
-// TestE2E_ShutdownNotDelayedByInFlightSubmit guards a regression: the per-iteration
-// idle read deadline must not clobber the shutdown deadline. With a submit in flight
-// (server mid-latency) when the engine shuts down, teardown must still be prompt —
-// not stalled until idleTimeout.
+// TestE2E_ShutdownNotDelayedByInFlightSubmit guards the loop-around shutdown path: a
+// submit in flight (server mid-latency) is abandoned when quit closes, and readLoop
+// loops back to the top with quit already closed — it must exit promptly, not re-arm
+// a far-future idle deadline and stall until idleTimeout. It catches removal of the
+// readLoop quit-check. (The blocked-in-ReadPDU path is covered by the graceful-
+// shutdown test; the exact re-arm-vs-closer clobber interleaving is a ~2-instruction
+// window that is not deterministically reproducible — its safety rests on the
+// happens-before argument documented at the quit-check.)
 func TestE2E_ShutdownNotDelayedByInFlightSubmit(t *testing.T) {
 	t.Parallel()
 
