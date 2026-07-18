@@ -118,8 +118,14 @@ func dlrWireState(o scenario.DLROutcome) (smpp.MessageState, string) {
 // byte-for-byte in seeded mode without ever reading the wall clock.
 var dlrEpoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// dlrDateSpanMinutes wraps the per-tick date offset at ~100 years, so the tick→duration
+// conversion stays well within int64 (the dates are cosmetic and only need to be
+// deterministic and roughly monotone, not a real calendar).
+const dlrDateSpanMinutes = 100 * 365 * 24 * 60
+
 // dlrDate renders a per_bind_clock tick as the SMPP YYMMDDhhmm receipt-date string,
 // offset one minute per tick from dlrEpoch — deterministic and monotone with the tick.
 func dlrDate(tick uint64) string {
-	return dlrEpoch.Add(time.Duration(tick) * time.Minute).Format("0601021504")
+	mins := tick % dlrDateSpanMinutes // bounded, so the Duration conversion cannot overflow
+	return dlrEpoch.Add(time.Duration(mins) * time.Minute).Format("0601021504")
 }

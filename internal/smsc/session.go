@@ -31,6 +31,10 @@ const (
 // conversion cannot overflow; no real scenario configures anywhere near a day.
 const maxServedLatencyMS = 24 * 60 * 60 * 1000
 
+// maxQuiescenceFlushMS bounds the quiescence window before its millisecond→Duration
+// conversion; it matches the config-layer ceiling on quiescence_flush_ms.
+const maxQuiescenceFlushMS = 600_000
+
 // serverInitiatedSeq is the sequence number the simulator stamps on a PDU it
 // originates rather than answers — currently the shutdown unbind. It sits at the top
 // of the valid range to avoid colliding with a client's from-one request sequence.
@@ -83,6 +87,10 @@ type session struct {
 }
 
 func newSession(id uint64, conn net.Conn, v *virtualSMSC, quit <-chan struct{}) *session {
+	quiescenceMS := v.cfg.EffectiveQuiescenceFlushMs()
+	if quiescenceMS > maxQuiescenceFlushMS {
+		quiescenceMS = maxQuiescenceFlushMS // validated at load, clamped here so the conversion cannot overflow
+	}
 	return &session{
 		id:           id,
 		conn:         conn,
@@ -91,7 +99,7 @@ func newSession(id uint64, conn net.Conn, v *virtualSMSC, quit <-chan struct{}) 
 		logger:       v.logger.With(slog.Uint64("bind_id", id)),
 		outbound:     make(chan []byte, 8),
 		writerClosed: make(chan struct{}),
-		quiescence:   time.Duration(v.cfg.EffectiveQuiescenceFlushMs()) * time.Millisecond,
+		quiescence:   time.Duration(quiescenceMS) * time.Millisecond,
 	}
 }
 
@@ -270,6 +278,10 @@ func (s *session) handle(pdu *smpp.PDU) {
 	case smpp.Unbind:
 		s.send(&smpp.PDU{CommandID: smpp.UnbindResp, CommandStatus: smpp.StatusROK, SequenceNumber: pdu.SequenceNumber})
 		s.state = stateClosed
+	case smpp.DeliverSMResp:
+		// The ESME acknowledging a DLR (or MO) we emitted. S4 tracks no outbound window,
+		// so there is nothing to correlate — accept it silently rather than generic_nack a
+		// perfectly valid ack.
 	default:
 		s.send(&smpp.PDU{CommandID: smpp.GenericNack, CommandStatus: smpp.StatusInvCmdID, SequenceNumber: pdu.SequenceNumber})
 	}
