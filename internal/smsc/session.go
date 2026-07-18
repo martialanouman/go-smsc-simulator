@@ -335,6 +335,15 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 		connectedAt: time.Now(),
 	})
 
+	// Anchor the quiescence window to the bind: S5 events are enqueued here, before any
+	// submit_sm, so without this lastSubmit would stay zero and armReadDeadline would fire
+	// the flush immediately. Off the deterministic path (it decides only WHEN to drain,
+	// never what or in what order), so reading the wall clock here is legitimate even seeded.
+	s.lastSubmit = time.Now()
+	// Enqueue this bind's tick-anchored schedule (MO/disconnects/transitions) now that it
+	// owns a clock and a PRNG state — each bind gets its own copy, keyed to its own clock.
+	s.scheduleConfiguredEvents()
+
 	s.send(&smpp.PDU{
 		CommandID:      respID,
 		CommandStatus:  smpp.StatusROK,
