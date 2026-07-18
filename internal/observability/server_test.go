@@ -42,6 +42,13 @@ func startServer(t *testing.T, insp observability.Inspector) string {
 	return "http://" + srv.Addr().String()
 }
 
+// testClient drives every request in this package. Keep-alive is disabled so a
+// connection never outlives its request: without it, the shared pool would hand
+// idle connections to Shutdown to wait on, and under parallel load plus the race
+// detector that wait can blow past the cleanup deadline — a flake, not a real
+// shutdown failure. One request, one connection, closed on completion.
+var testClient = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
 // get issues a GET and fails the test if the request itself could not be made.
 // The caller owns closing the body.
 func get(t *testing.T, url string) *http.Response {
@@ -52,7 +59,7 @@ func get(t *testing.T, url string) *http.Response {
 		t.Fatalf("build GET %s: %v", url, err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := testClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
@@ -98,7 +105,7 @@ func TestServer_RejectsMutatingVerbs(t *testing.T) {
 				t.Fatalf("build %s request: %v", method, err)
 			}
 
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := testClient.Do(req)
 			if err != nil {
 				t.Fatalf("%s /health: %v", method, err)
 			}

@@ -120,7 +120,7 @@ func TestInspection_RejectsMutatingVerbs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("build %s: %v", method, err)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := testClient.Do(req)
 		if err != nil {
 			t.Fatalf("%s /v1/virtual-smscs: %v", method, err)
 		}
