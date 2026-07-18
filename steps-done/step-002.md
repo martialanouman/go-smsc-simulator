@@ -1,7 +1,9 @@
 # Step 002 — S2 · Squelette SMPP vertical (bind → submit_sm → healthy → recorder → inspection)
 
 > Plan de référence : `docs/plan-execution-simulateur-smsc.md` §6.
-> **Statut : ⏳ À FAIRE — jalon le plus important (le walking skeleton).**
+> **Statut : ✅ LIVRÉ** (branche `s2-smpp-vertical-skeleton`). Walking skeleton prouvé de bout en bout.
+>
+> **Écart assumé vs plan écrit** : aucune dépendance `google/uuid` ajoutée. Les identifiants sont déterministes (`message_id` = `bindSeq-perBindClock`, ID de session = ordinal), pour être reproductibles à seed fixe (invariant a) et compatibles avec la corrélation DLR de S4 — décision validée avec l'utilisateur.
 
 ## Objectif
 
@@ -84,3 +86,11 @@ Endpoints **GET uniquement** (le préfixe `GET ` du `ServeMux` fait le 405 struc
 ## Definition of Done
 
 Voir §0.4 du plan : gofmt/goimports, golangci-lint 0 alerte, `go test -race` vert, govulncheck vert, critères couverts par tests, godoc sur l'exporté, PR focalisée. Mettre à jour `CLAUDE.md` (carte d'architecture) si un package nouveau apparaît.
+
+## Revue de branche (post-livraison)
+
+Revue multi-agents à haut effort sur le diff. 10 findings vérifiés, traités ainsi :
+
+- **Corrigés** : régression du contrat d'arrêt (`main.go` remontait le timeout de drain moteur → exit non-zéro au `SIGTERM`) ; race `WaitGroup` Add/Wait dans l'engine ; deadline manquant sur le drain moteur des chemins d'erreur ; horloges qui avançaient avant `serveLatency` (sur-comptage si arrêt pendant la latence) ; **unbind propre des binds au `SIGTERM`** (le closer envoyait un RST) ; `?limit` négatif/invalide qui déversait tout le buffer ; déduplication `bindTypeName`/`bindRespID` → `bindKind`.
+- **Reportés à S3** : absence de read/write deadlines côté session (wedge/fuite de goroutine) — recoupe les timeouts de l'injecteur de panne. Consigné dans `steps/step-003.md`.
+- **Par conception (non modifié)** : `message_id = bindSeq-perBindClock` où `bindSeq` est l'ordre d'`Accept`, non reproductible entre binds **concurrents**. Cohérent avec le contrat documenté (déterminisme **scopé par bind** ; ordre inter-bind global non garanti — plan §1.5). Bind unique ou séquentiel → reproductible. La corrélation DLR de S4 doit rester **intra-bind**.

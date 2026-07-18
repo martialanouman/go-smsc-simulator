@@ -3,7 +3,7 @@ CMD         := ./cmd/smsc-simulator
 BIN_DIR     := bin
 CONFIG      ?= examples/minimal.yml
 
-GOLANGCI_LINT_VERSION := v2.3.0
+GOLANGCI_LINT_VERSION := v2.12.2
 GOVULNCHECK_VERSION   := v1.6.0
 DOCKER_IMAGE          := smsc-simulator:dev
 

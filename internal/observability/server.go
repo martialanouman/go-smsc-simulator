@@ -31,6 +31,7 @@ type Server struct {
 	http     *http.Server
 	listener net.Listener
 	logger   *slog.Logger
+	insp     Inspector
 }
 
 // NewServer binds the observability port and prepares the read-only surface.
@@ -40,20 +41,32 @@ type Server struct {
 // pass port 0 and read back the OS-assigned address via Addr. Tests rely on
 // that: they bind ephemeral ports to stay parallel-safe.
 //
-// STUB S2/S6: only /health is served. The inspection endpoints (/v1/...) land at
-// S2 and /metrics at S6. See plan §6 and §10.
-func NewServer(port int, logger *slog.Logger) (*Server, error) {
+// insp is the read-only view onto the running simulator; the /v1 inspection routes
+// are registered only when it is non-nil, so a black-box or pre-engine boot still
+// serves /health alone. insp is never allowed to mutate state — see Inspector.
+//
+// STUB S6: /metrics lands at S6. See plan §10.
+func NewServer(port int, logger *slog.Logger, insp Inspector) (*Server, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, fmt.Errorf("listen on observability port %d: %w", port, err)
 	}
 
-	s := &Server{listener: ln, logger: logger}
+	s := &Server{listener: ln, logger: logger, insp: insp}
 
 	mux := http.NewServeMux()
 	// The "GET " prefix is load-bearing: it is what makes POST/PUT/PATCH/DELETE
-	// return 405 without a single line of defensive code.
+	// return 405 without a single line of defensive code. Every route added here
+	// must keep it, or the read-only invariant (c) breaks (plan §0.5).
 	mux.HandleFunc("GET /health", s.handleHealth)
+
+	if insp != nil {
+		mux.HandleFunc("GET /v1/virtual-smscs", s.handleVirtualSMSCs)
+		mux.HandleFunc("GET /v1/virtual-smscs/{id}", s.handleVirtualSMSC)
+		mux.HandleFunc("GET /v1/virtual-smscs/{id}/received-pdus", s.handleReceivedPDUs)
+		mux.HandleFunc("GET /v1/virtual-smscs/{id}/binds", s.handleBinds)
+		mux.HandleFunc("GET /v1/virtual-smscs/{id}/logical-clock", s.handleLogicalClock)
+	}
 
 	s.http = &http.Server{
 		Handler:           mux,
