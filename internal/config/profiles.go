@@ -40,6 +40,9 @@ const (
 	portMin          = 1
 	portMax          = 65_535
 	octetMax         = 255 // addr_ton / addr_npi are single octets
+
+	quiescenceFlushMinMs = 1       // a zero window would flush before any traffic could arrive
+	quiescenceFlushMaxMs = 600_000 // 10 min ceiling, matching the served-latency cap
 )
 
 // profileSpec captures what config validation needs to know about one profile: the

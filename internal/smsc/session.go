@@ -13,6 +13,7 @@ import (
 	"github.com/martialanouman/go-smsc-simulator/internal/config"
 	"github.com/martialanouman/go-smsc-simulator/internal/recorder"
 	"github.com/martialanouman/go-smsc-simulator/internal/scenario"
+	"github.com/martialanouman/go-smsc-simulator/internal/schedule"
 	"github.com/martialanouman/go-smsc-simulator/internal/smpp"
 )
 
@@ -29,6 +30,10 @@ const (
 // maxServedLatencyMS bounds the served-latency wait so the millisecond→Duration
 // conversion cannot overflow; no real scenario configures anywhere near a day.
 const maxServedLatencyMS = 24 * 60 * 60 * 1000
+
+// maxQuiescenceFlushMS bounds the quiescence window before its millisecond→Duration
+// conversion; it matches the config-layer ceiling on quiescence_flush_ms.
+const maxQuiescenceFlushMS = 600_000
 
 // serverInitiatedSeq is the sequence number the simulator stamps on a PDU it
 // originates rather than answers — currently the shutdown unbind. It sits at the top
@@ -60,9 +65,18 @@ type session struct {
 	state         sessionState
 	bindType      string
 	canSubmit     bool
+	canReceive    bool // a receiver/transceiver bind may take an async deliver_sm (DLR/MO)
 	systemID      string
 	perBindClock  uint64
 	scenarioState *scenario.BindState // created at successful bind; nil until then
+
+	// sched is this bind's pending tick-scheduled events (DLRs at S4). It is drained by
+	// the read goroutine — on a submit that advances the clock (voie a) or, after the
+	// quiescence window of no submit_sm, by a flush (voie b) — so all emission stays on
+	// readLoop and never races the outbound teardown. lastSubmit anchors the window.
+	sched      schedule.Runner
+	quiescence time.Duration
+	lastSubmit time.Time
 
 	// bound is read by the closer goroutine (a different goroutine than readLoop) to
 	// decide whether a graceful shutdown warrants an unbind, so it is atomic.
@@ -73,6 +87,10 @@ type session struct {
 }
 
 func newSession(id uint64, conn net.Conn, v *virtualSMSC, quit <-chan struct{}) *session {
+	quiescenceMS := v.cfg.EffectiveQuiescenceFlushMs()
+	if quiescenceMS > maxQuiescenceFlushMS {
+		quiescenceMS = maxQuiescenceFlushMS // validated at load, clamped here so the conversion cannot overflow
+	}
 	return &session{
 		id:           id,
 		conn:         conn,
@@ -81,6 +99,7 @@ func newSession(id uint64, conn net.Conn, v *virtualSMSC, quit <-chan struct{}) 
 		logger:       v.logger.With(slog.Uint64("bind_id", id)),
 		outbound:     make(chan []byte, 8),
 		writerClosed: make(chan struct{}),
+		quiescence:   time.Duration(quiescenceMS) * time.Millisecond,
 	}
 }
 
@@ -158,14 +177,37 @@ func (s *session) send(pdu *smpp.PDU) {
 	}
 }
 
+// armReadDeadline sets the read deadline for the next blocking read. With no events
+// pending it is the long idle-reap window; with events pending it is shortened to the
+// quiescence window (measured from the last submit) so the flush can fire while the bind
+// sits silent — whichever is sooner, so idle-reaping still bounds a truly dead bind.
+func (s *session) armReadDeadline() {
+	deadline := time.Now().Add(idleTimeout)
+	if s.sched.Len() > 0 {
+		if q := s.lastSubmit.Add(s.quiescence); q.Before(deadline) {
+			deadline = q
+		}
+	}
+	_ = s.conn.SetReadDeadline(deadline)
+}
+
+// isTimeout reports whether err is a read-deadline timeout (as opposed to a closed
+// connection or a truncation), i.e. a quiescence/idle wakeup rather than a real failure.
+func (s *session) isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
 // readLoop reads, decodes and handles PDUs until the connection ends or a handler
 // closes the session. A decode failure is answered with generic_nack rather than
 // dropping the link, echoing the sequence number straight from the frame.
 func (s *session) readLoop() {
 	for {
-		// Re-arm the idle deadline each iteration: any PDU (including an enquire_link
-		// keepalive) resets it, so only a truly silent/half-open bind is reaped.
-		_ = s.conn.SetReadDeadline(time.Now().Add(idleTimeout))
+		// Re-arm the read deadline each iteration: any PDU (including an enquire_link
+		// keepalive) resets it. With events pending, the deadline is shortened to the
+		// quiescence window so the flush can fire on a silent bind; otherwise it is the
+		// long idle-reap window.
+		s.armReadDeadline()
 
 		// Check for shutdown AFTER re-arming and immediately before blocking. The closer
 		// sets a past read deadline to unblock this read on shutdown; if that happened
@@ -183,6 +225,24 @@ func (s *session) readLoop() {
 
 		frame, err := smpp.ReadPDU(s.conn)
 		if err != nil {
+			// A read-deadline timeout is not necessarily the end of the session: it is how
+			// the quiescence flush is driven. Shutdown takes priority; then, while events
+			// remain pending, flush once the idle window has elapsed and keep the bind
+			// alive; only a timeout with nothing pending reaps a genuinely silent bind.
+			if s.isTimeout(err) {
+				select {
+				case <-s.quit:
+					return
+				default:
+				}
+				if s.sched.Len() > 0 {
+					if time.Since(s.lastSubmit) >= s.quiescence {
+						s.flushSchedule() // voie b: silence past the window drains pending events in tick order
+					}
+					continue
+				}
+				return // idle timeout with no pending events: reap the silent bind
+			}
 			if !errors.Is(err, net.ErrClosed) {
 				s.logger.Debug("read loop ended", slog.Any("error", err))
 			}
@@ -218,6 +278,10 @@ func (s *session) handle(pdu *smpp.PDU) {
 	case smpp.Unbind:
 		s.send(&smpp.PDU{CommandID: smpp.UnbindResp, CommandStatus: smpp.StatusROK, SequenceNumber: pdu.SequenceNumber})
 		s.state = stateClosed
+	case smpp.DeliverSMResp:
+		// The ESME acknowledging a DLR (or MO) we emitted. S4 tracks no outbound window,
+		// so there is nothing to correlate — accept it silently rather than generic_nack a
+		// perfectly valid ack.
 	default:
 		s.send(&smpp.PDU{CommandID: smpp.GenericNack, CommandStatus: smpp.StatusInvCmdID, SequenceNumber: pdu.SequenceNumber})
 	}
@@ -261,6 +325,7 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 	s.systemID = bind.SystemID
 	s.bindType = bindType
 	s.canSubmit = pdu.CommandID != smpp.BindReceiver
+	s.canReceive = pdu.CommandID != smpp.BindTransmitter
 	s.scenarioState = s.smsc.scenario.NewBindState(s.smsc.cfg.Seed, s.smsc.cfg.Name, s.id)
 	s.bound.Store(true)
 	s.smsc.binds.add(bindInfo{
@@ -309,6 +374,10 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	// tick and the recorder (the assertion surface) sees every received submit_sm.
 	s.perBindClock = tick
 	s.smsc.logicalClock.Add(1)
+	// Anchor the quiescence window: the flush fires this long after the last submit_sm.
+	// Off the deterministic content path (it decides only WHEN to drain, never what or in
+	// what order), so reading the wall clock here is legitimate even in seeded mode.
+	s.lastSubmit = time.Now()
 
 	messageID := s.messageID()
 	s.smsc.recorder.Append(recorder.RecordedPDU{
@@ -332,6 +401,11 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 			SequenceNumber: pdu.SequenceNumber,
 			Body:           &smpp.SubmitResp{MessageID: messageID},
 		})
+		// A successful submit schedules its DLR (when the profile configures one), anchored
+		// to the origin tick + the configured delay on this bind.
+		if decision.DLR != nil {
+			s.scheduleDLR(messageID, msg, decision.DLR)
+		}
 	case scenario.OutcomeError:
 		// A non-ROK submit_sm_resp carries no message_id body.
 		s.send(&smpp.PDU{CommandID: smpp.SubmitSMResp, CommandStatus: decision.Status, SequenceNumber: pdu.SequenceNumber})
@@ -351,6 +425,10 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		s.state = stateClosed // teardown closes the TCP connection
 		return
 	}
+
+	// Normal drain (voie a): this submit advanced the clock, so release any DLRs whose
+	// due tick it has now reached, in deterministic tick order.
+	s.drainDue(s.perBindClock)
 }
 
 // serveLatency waits the served latency, returning false if the engine is shutting

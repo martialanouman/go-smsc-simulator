@@ -17,6 +17,7 @@ virtual_smscs:
     seed: 42
     pdu_buffer_size: 10000
     throughput_limit_per_sec: 5000
+    quiescence_flush_ms: 100
     scenario:
       profile: throttling-carrier
       params:

@@ -208,3 +208,14 @@ func (e *Engine) LogicalClock(id string) (uint64, bool) {
 	}
 	return v.logicalClock.Load(), true
 }
+
+// DLRsDropped returns how many delivery receipts one virtual SMSC could not emit for a
+// mapping reason (e.g. a transmitter-only origin bind). It is a read-only counter, not
+// wired to an HTTP route at S4 — DLR inspection and Prometheus metrics land at S6.
+func (e *Engine) DLRsDropped(id string) (uint64, bool) {
+	v, ok := e.byName[id]
+	if !ok {
+		return 0, false
+	}
+	return v.dlrDropped.Load(), true
+}

@@ -64,6 +64,17 @@ func (c *Client) BindTransceiver(systemID, password string) *smpp.PDU {
 	})
 }
 
+// BindTransmitter binds as a transmitter (may submit, may not receive deliver_sm) and
+// returns the response PDU — used to exercise the DLR path on a bind with no return leg.
+func (c *Client) BindTransmitter(systemID, password string) *smpp.PDU {
+	c.t.Helper()
+	return c.roundTrip(&smpp.PDU{
+		CommandID:      smpp.BindTransmitter,
+		SequenceNumber: c.nextSeq(),
+		Body:           &smpp.Bind{SystemID: systemID, Password: password, InterfaceVersion: 0x34},
+	})
+}
+
 // Submit sends a submit_sm with international TON/NPI and returns the response PDU.
 func (c *Client) Submit(source, dest, message string) *smpp.PDU {
 	c.t.Helper()
@@ -189,6 +200,116 @@ func (c *Client) ReadWithin(d time.Duration) *smpp.PDU {
 		c.t.Fatalf("decode pdu: %v", err)
 	}
 	return pdu
+}
+
+// ReadDeliverSM reads one deliver_sm (a DLR or MO) under a caller-chosen deadline and
+// acknowledges it with a deliver_sm_resp, as a real ESME would. It fails the test if the
+// PDU that arrives is not a deliver_sm.
+func (c *Client) ReadDeliverSM(d time.Duration) *smpp.PDU {
+	c.t.Helper()
+
+	pdu := c.ReadWithin(d)
+	if pdu.CommandID != smpp.DeliverSM {
+		c.t.Fatalf("expected deliver_sm, got %s", pdu.CommandID)
+	}
+	c.write(&smpp.PDU{
+		CommandID:      smpp.DeliverSMResp,
+		CommandStatus:  smpp.StatusROK,
+		SequenceNumber: pdu.SequenceNumber,
+		Body:           &smpp.SubmitResp{}, // deliver_sm_resp: empty message_id
+	})
+	return pdu
+}
+
+// DrainDeliverSMs reads and acknowledges deliver_sm PDUs until d elapses with none
+// arriving, returning them in receive order. Used to collect a whole flushed DLR batch
+// without knowing the count in advance. It fails the test if a non-deliver_sm arrives.
+func (c *Client) DrainDeliverSMs(d time.Duration) []*smpp.PDU {
+	c.t.Helper()
+
+	var out []*smpp.PDU
+	for {
+		if err := c.conn.SetReadDeadline(time.Now().Add(d)); err != nil {
+			c.t.Fatalf("set read deadline: %v", err)
+		}
+		frame, err := smpp.ReadPDU(c.conn)
+		if err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				return out // quiet for d: the batch is fully drained
+			}
+			c.t.Fatalf("read pdu: %v", err)
+		}
+		pdu, err := smpp.Decode(frame)
+		if err != nil {
+			c.t.Fatalf("decode pdu: %v", err)
+		}
+		if pdu.CommandID != smpp.DeliverSM {
+			c.t.Fatalf("expected deliver_sm, got %s", pdu.CommandID)
+		}
+		c.write(&smpp.PDU{
+			CommandID:      smpp.DeliverSMResp,
+			CommandStatus:  smpp.StatusROK,
+			SequenceNumber: pdu.SequenceNumber,
+			Body:           &smpp.SubmitResp{},
+		})
+		out = append(out, pdu)
+	}
+}
+
+// CollectDeliverSMs reads until it has gathered count deliver_sm PDUs, acknowledging
+// each and skipping any other PDU (e.g. an interleaved submit_sm_resp when submits and
+// receipts share the stream). It fails the test if the deadline elapses first. Use it to
+// assert receipts drained mid-traffic (voie a) without depending on wire interleaving.
+func (c *Client) CollectDeliverSMs(count int, within time.Duration) []*smpp.PDU {
+	c.t.Helper()
+
+	deadline := time.Now().Add(within)
+	var out []*smpp.PDU
+	for len(out) < count {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			c.t.Fatalf("collected %d/%d deliver_sm before the deadline", len(out), count)
+		}
+		if err := c.conn.SetReadDeadline(time.Now().Add(remaining)); err != nil {
+			c.t.Fatalf("set read deadline: %v", err)
+		}
+		frame, err := smpp.ReadPDU(c.conn)
+		if err != nil {
+			c.t.Fatalf("read pdu: %v", err)
+		}
+		pdu, err := smpp.Decode(frame)
+		if err != nil {
+			c.t.Fatalf("decode pdu: %v", err)
+		}
+		if pdu.CommandID != smpp.DeliverSM {
+			continue // an interleaved submit_sm_resp or the like: not what we are collecting
+		}
+		c.write(&smpp.PDU{
+			CommandID:      smpp.DeliverSMResp,
+			CommandStatus:  smpp.StatusROK,
+			SequenceNumber: pdu.SequenceNumber,
+			Body:           &smpp.SubmitResp{},
+		})
+		out = append(out, pdu)
+	}
+	return out
+}
+
+// write encodes and sends a PDU without reading a response.
+func (c *Client) write(pdu *smpp.PDU) {
+	c.t.Helper()
+
+	b, err := smpp.Encode(pdu)
+	if err != nil {
+		c.t.Fatalf("encode %s: %v", pdu.CommandID, err)
+	}
+	if err := c.conn.SetWriteDeadline(time.Now().Add(ioTimeout)); err != nil {
+		c.t.Fatalf("set write deadline: %v", err)
+	}
+	if _, err := c.conn.Write(b); err != nil {
+		c.t.Fatalf("write %s: %v", pdu.CommandID, err)
+	}
 }
 
 // roundTrip writes a request and reads the single PDU the server sends back.

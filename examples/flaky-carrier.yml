@@ -19,6 +19,7 @@ virtual_smscs:
       enabled: false
     seed: 7
     pdu_buffer_size: 10000
+    quiescence_flush_ms: 100   # flush pending DLRs quickly once traffic stops
     scenario:
       profile: flaky-carrier
       params:
