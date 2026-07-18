@@ -7,6 +7,12 @@
 
 Activer les **6 profils prédéfinis paramétrés** et l'**injection de panne** (résultats pondérés, latences), avec un déterminisme graîné **vérifiable par rejeu**. Les STUB de S2 disparaissent.
 
+## Reporté de la revue S2 (à traiter ici)
+
+La revue de la branche S2 a relevé deux manques de robustesse de session, reportés à S3 car ils recoupent le travail de timeouts/déconnexions de l'injecteur de panne :
+
+- **Deadlines de connexion côté serveur** (`internal/smsc/session.go`) : `writeLoop` n'a pas de write deadline (un client qui cesse de lire wedge la goroutine d'écriture) et `readLoop` pas de read/idle deadline (un bind idle/half-open fuit ses goroutines jusqu'à l'arrêt global). À traiter avec le mécanisme `timeout` de l'injecteur (T3) : write deadline sur chaque écriture, reaping des binds idle (ancré `enquire_link`/tick). Sans seed, l'idle peut être en horloge murale ; en mode graîné, ancré au tick.
+
 ## Dépend de
 
 S2.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/martialanouman/go-smsc-simulator/internal/recorder"
@@ -27,6 +28,11 @@ const (
 // conversion cannot overflow; no real scenario configures anywhere near a day.
 const maxServedLatencyMS = 24 * 60 * 60 * 1000
 
+// serverInitiatedSeq is the sequence number the simulator stamps on a PDU it
+// originates rather than answers — currently the shutdown unbind. It sits at the top
+// of the valid range to avoid colliding with a client's from-one request sequence.
+const serverInitiatedSeq uint32 = 0x7FFFFFFF
+
 // session drives one client connection. The read goroutine (readLoop) owns all
 // session state and decodes/handles PDUs; a separate writer goroutine owns the
 // socket writes, draining the outbound channel. This split is what lets S4/S5 emit
@@ -44,6 +50,10 @@ type session struct {
 	canSubmit    bool
 	systemID     string
 	perBindClock uint64
+
+	// bound is read by the closer goroutine (a different goroutine than readLoop) to
+	// decide whether a graceful shutdown warrants an unbind, so it is atomic.
+	bound atomic.Bool
 
 	outbound     chan []byte
 	writerClosed chan struct{}
@@ -69,11 +79,18 @@ func (s *session) run() {
 	done := make(chan struct{})
 	defer close(done)
 
-	// closer: Shutdown closes quit, which drops the conn to unblock a blocked read.
+	// closer: on engine shutdown, unbind bound clients gracefully rather than dropping
+	// the TCP connection under them (CLAUDE.md: "unbind propre des binds sur SIGTERM").
+	// It queues the unbind, then sets a past read deadline to unblock readLoop; teardown
+	// then flushes the queued unbind before closing the socket. Best-effort: it does not
+	// wait for unbind_resp.
 	go func() {
 		select {
 		case <-s.quit:
-			_ = s.conn.Close()
+			if s.bound.Load() {
+				s.send(&smpp.PDU{CommandID: smpp.Unbind, SequenceNumber: serverInitiatedSeq})
+			}
+			_ = s.conn.SetReadDeadline(time.Now())
 		case <-done:
 		}
 	}()
@@ -167,7 +184,7 @@ func (s *session) handle(pdu *smpp.PDU) {
 // session. A wrong credential is answered with ESME_RBINDFAIL and the link is closed,
 // as a real SMSC would (this is also the seam dead-carrier's reject_bind reuses at S3).
 func (s *session) handleBind(pdu *smpp.PDU) {
-	respID := bindRespID(pdu.CommandID)
+	bindType, respID := bindKind(pdu.CommandID)
 
 	if s.state != stateOpen {
 		s.send(&smpp.PDU{CommandID: respID, CommandStatus: smpp.StatusInvBndSts, SequenceNumber: pdu.SequenceNumber})
@@ -191,8 +208,9 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 
 	s.state = stateBound
 	s.systemID = bind.SystemID
-	s.bindType = bindTypeName(pdu.CommandID)
+	s.bindType = bindType
 	s.canSubmit = pdu.CommandID != smpp.BindReceiver
+	s.bound.Store(true)
 	s.smsc.binds.add(bindInfo{
 		id:          s.id,
 		systemID:    bind.SystemID,
@@ -223,15 +241,18 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		return
 	}
 
-	// Both clocks advance per submit_sm: per_bind_clock is the deterministic timing
-	// reference (owned here), logical_clock the global assertion observable (plan §1.5).
-	s.perBindClock++
-	s.smsc.logicalClock.Add(1)
-
-	decision := s.smsc.scenario.Evaluate(s.perBindClock)
+	// The tick is chosen before serving latency (the scenario keys its outcome and
+	// latency on it), but only committed once we are sure to record and answer. If the
+	// engine shuts down mid-latency we abandon the submit without advancing either
+	// clock, so logical_clock never counts a PDU the recorder never stored (plan §1.5).
+	tick := s.perBindClock + 1
+	decision := s.smsc.scenario.Evaluate(tick)
 	if !s.serveLatency(decision.LatencyMS) {
 		return // engine shutting down: abandon this submit rather than sleep on
 	}
+
+	s.perBindClock = tick
+	s.smsc.logicalClock.Add(1)
 
 	messageID := s.messageID()
 	s.smsc.recorder.Append(recorder.RecordedPDU{
@@ -283,26 +304,15 @@ func (s *session) messageID() string {
 	return fmt.Sprintf("%d-%04d", s.id, s.perBindClock)
 }
 
-func bindTypeName(id smpp.CommandID) string {
+// bindKind maps a bind command to its human-readable type name and the matching
+// response command id, from a single switch so the two can never drift apart.
+func bindKind(id smpp.CommandID) (name string, respID smpp.CommandID) {
 	switch id {
 	case smpp.BindTransmitter:
-		return "transmitter"
+		return "transmitter", smpp.BindTransmitterResp
 	case smpp.BindReceiver:
-		return "receiver"
-	case smpp.BindTransceiver:
-		return "transceiver"
+		return "receiver", smpp.BindReceiverResp
 	default:
-		return "unknown"
-	}
-}
-
-func bindRespID(id smpp.CommandID) smpp.CommandID {
-	switch id {
-	case smpp.BindTransmitter:
-		return smpp.BindTransmitterResp
-	case smpp.BindReceiver:
-		return smpp.BindReceiverResp
-	default:
-		return smpp.BindTransceiverResp
+		return "transceiver", smpp.BindTransceiverResp
 	}
 }

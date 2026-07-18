@@ -89,6 +89,13 @@ func (c *Client) Unbind() *smpp.PDU {
 	return c.roundTrip(&smpp.PDU{CommandID: smpp.Unbind, SequenceNumber: c.nextSeq()})
 }
 
+// Read blocks for one unsolicited PDU from the server — a server-initiated unbind on
+// shutdown, or (from S4/S5) a deliver_sm carrying a DLR or MO.
+func (c *Client) Read() *smpp.PDU {
+	c.t.Helper()
+	return c.read()
+}
+
 // roundTrip writes a request and reads the single PDU the server sends back.
 func (c *Client) roundTrip(req *smpp.PDU) *smpp.PDU {
 	c.t.Helper()
@@ -103,17 +110,23 @@ func (c *Client) roundTrip(req *smpp.PDU) *smpp.PDU {
 	if _, err := c.conn.Write(b); err != nil {
 		c.t.Fatalf("write %s: %v", req.CommandID, err)
 	}
+	return c.read()
+}
+
+// read reads and decodes one PDU under the io timeout.
+func (c *Client) read() *smpp.PDU {
+	c.t.Helper()
 
 	if err := c.conn.SetReadDeadline(time.Now().Add(ioTimeout)); err != nil {
 		c.t.Fatalf("set read deadline: %v", err)
 	}
 	frame, err := smpp.ReadPDU(c.conn)
 	if err != nil {
-		c.t.Fatalf("read response to %s: %v", req.CommandID, err)
+		c.t.Fatalf("read pdu: %v", err)
 	}
-	resp, err := smpp.Decode(frame)
+	pdu, err := smpp.Decode(frame)
 	if err != nil {
-		c.t.Fatalf("decode response to %s: %v", req.CommandID, err)
+		c.t.Fatalf("decode pdu: %v", err)
 	}
-	return resp
+	return pdu
 }

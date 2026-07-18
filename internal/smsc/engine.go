@@ -29,9 +29,16 @@ type Engine struct {
 
 	// quit is closed by Shutdown to signal every session goroutine to stop; wg
 	// tracks accept loops and live sessions so Shutdown can wait for a clean drain.
-	quit chan struct{}
-	once sync.Once
-	wg   sync.WaitGroup
+	quit     chan struct{}
+	quitOnce sync.Once
+	wg       sync.WaitGroup
+
+	// mu guards serving. It also orders Serve's initial wg.Add calls before any
+	// Shutdown wg.Wait: Serve registers the accept loops while holding mu, and
+	// Shutdown reads serving under mu, so a Wait can never start from a zero counter
+	// concurrently with those Adds (a WaitGroup misuse the race detector flags).
+	mu      sync.Mutex
+	serving bool
 }
 
 // New binds a listener for every virtual SMSC up front, so a port conflict fails at
@@ -64,6 +71,8 @@ func New(cfgs []config.VirtualSMSCConfig, logger *slog.Logger) (*Engine, error) 
 // quit rather than on the WaitGroup directly, so a process hosting zero virtual SMSCs
 // (a black-box config) still waits for shutdown instead of returning immediately.
 func (e *Engine) Serve() error {
+	e.mu.Lock()
+	e.serving = true
 	for _, v := range e.smscs {
 		e.wg.Add(1)
 		go func(v *virtualSMSC) {
@@ -73,6 +82,8 @@ func (e *Engine) Serve() error {
 		e.logger.Info("virtual smsc listening",
 			slog.String("virtual_smsc", v.cfg.Name), slog.String("addr", v.listener.Addr().String()))
 	}
+	e.mu.Unlock()
+
 	<-e.quit
 	e.wg.Wait()
 	return nil
@@ -81,9 +92,20 @@ func (e *Engine) Serve() error {
 // Shutdown stops accepting, signals live sessions to unwind, and waits for them to
 // drain within ctx. Closing the listeners unblocks the accept loops; closing quit
 // (and, through it, each session's connection) unblocks the reads.
+//
+// When Serve was never started (a bind failed at boot, before Serve ran), there are
+// no goroutines to drain, so Shutdown closes the listeners and returns without
+// waiting — which also avoids racing a wg.Wait against Serve's first Add.
 func (e *Engine) Shutdown(ctx context.Context) error {
 	e.closeListeners()
-	e.once.Do(func() { close(e.quit) })
+	e.quitOnce.Do(func() { close(e.quit) })
+
+	e.mu.Lock()
+	serving := e.serving
+	e.mu.Unlock()
+	if !serving {
+		return nil
+	}
 
 	done := make(chan struct{})
 	go func() {

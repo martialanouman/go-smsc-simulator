@@ -33,7 +33,7 @@ func (s *Server) handleReceivedPDUs(w http.ResponseWriter, r *http.Request) {
 		SourceAddr: q.Get("sourceAddr"),
 		DestAddr:   q.Get("destAddr"),
 		Since:      parseUint(q.Get("since")),
-		Limit:      parseInt(q.Get("limit")),
+		Limit:      pageLimit(q.Get("limit")),
 	}
 	pdus, ok := s.insp.ReceivedPDUs(id, f)
 	if !ok {
@@ -83,18 +83,24 @@ func (s *Server) notFound(w http.ResponseWriter, id string) {
 	}
 }
 
-// parseUint returns the parsed value or 0 for empty/invalid input (absent filter).
-func parseUint(s string) uint64 {
-	v, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return 0
+// maxPDUPage bounds a single received-pdus response so a paging request can never
+// serialize an entire large buffer at once. It is also the default when limit is
+// absent, invalid or non-positive, so a malformed limit yields a bounded page rather
+// than the surprise of the whole buffer.
+const maxPDUPage = 1000
+
+// pageLimit resolves the limit query parameter to a positive, capped page size.
+func pageLimit(s string) int {
+	v, err := strconv.Atoi(s)
+	if err != nil || v <= 0 || v > maxPDUPage {
+		return maxPDUPage
 	}
 	return v
 }
 
-// parseInt returns the parsed value or 0 for empty/invalid input (no limit).
-func parseInt(s string) int {
-	v, err := strconv.Atoi(s)
+// parseUint returns the parsed value or 0 for empty/invalid input (absent filter).
+func parseUint(s string) uint64 {
+	v, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
 		return 0
 	}

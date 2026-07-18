@@ -201,6 +201,30 @@ func TestE2E_WrongCredentialsRejected(t *testing.T) {
 	}
 }
 
+// TestE2E_GracefulShutdownUnbindsBoundClients checks that engine shutdown sends a
+// server-initiated unbind to bound clients rather than dropping the TCP connection
+// (CLAUDE.md: "unbind propre des binds sur SIGTERM"), so the gateway under test sees
+// a clean unbind, not a reset that could trip its reconnect/circuit-breaker logic.
+func TestE2E_GracefulShutdownUnbindsBoundClients(t *testing.T) {
+	t.Parallel()
+
+	h := start(t, "carrier-healthy")
+	client := smpptest.Dial(t, h.smppAddr)
+	client.BindTransceiver(testSystemID, testPassword)
+
+	// Shutdown from another goroutine so the client's blocking read stays on the test
+	// goroutine (where a failed read may call t.Fatalf).
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = h.engine.Shutdown(ctx)
+	}()
+
+	if pdu := client.Read(); pdu.CommandID != smpp.Unbind {
+		t.Fatalf("on graceful shutdown got %s, want a server-initiated unbind", pdu.CommandID)
+	}
+}
+
 func decodeGET(t *testing.T, url string, dst any) {
 	t.Helper()
 

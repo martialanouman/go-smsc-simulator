@@ -80,9 +80,9 @@ func run(ctx context.Context, configPath string) error {
 
 	srv, err := startObservability(cfg, logger, engine)
 	if err != nil {
-		// The engine's listeners are already open; drain it so a failed boot leaves
-		// no half-open SMPP port behind.
-		_ = engine.Shutdown(context.WithoutCancel(ctx))
+		// The engine's listeners are already open; close them so a failed boot leaves
+		// no half-open SMPP port behind. Serve never ran, so this returns at once.
+		stopEngine(context.WithoutCancel(ctx), logger, engine)
 		return err
 	}
 
@@ -104,7 +104,7 @@ func run(ctx context.Context, configPath string) error {
 		} else {
 			err = errors.New("observability surface stopped unexpectedly")
 		}
-		_ = engine.Shutdown(context.WithoutCancel(ctx))
+		stopEngine(context.WithoutCancel(ctx), logger, engine)
 		return err
 	case err := <-engineErr:
 		// Serve only returns after Shutdown, so an early return here is a failure.
@@ -121,11 +121,25 @@ func run(ctx context.Context, configPath string) error {
 	// WithoutCancel keeps ctx's values but drops its cancellation: ctx has just
 	// fired, and a drain deadline derived from it would expire before the drain
 	// began, turning the graceful stop into an abrupt one.
-	engineCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	//
+	// Only the observability drain's result is returned: an engine drain overrun is a
+	// degraded-but-requested stop, logged inside stopEngine rather than surfaced as a
+	// non-zero exit (same contract as shutdown, so SIGTERM never fails CI teardown).
+	drainCtx := context.WithoutCancel(ctx)
+	stopEngine(drainCtx, logger, engine)
+	return shutdown(drainCtx, logger, srv, obsErr)
+}
+
+// stopEngine drains the SMPP engine within shutdownTimeout. A drain that overruns
+// the deadline is logged, not returned: like the observability drain, a slow but
+// operator-requested stop is a degraded success, not a process failure — returning
+// it non-zero would fail the CI teardown that sent the signal.
+func stopEngine(ctx context.Context, logger *slog.Logger, engine *smsc.Engine) {
+	ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 	defer cancel()
-	engineStopErr := engine.Shutdown(engineCtx)
-	obsStopErr := shutdown(context.WithoutCancel(ctx), logger, srv, obsErr)
-	return errors.Join(engineStopErr, obsStopErr)
+	if err := engine.Shutdown(ctx); err != nil {
+		logger.Warn("smpp engine did not drain within the deadline", slog.Any("error", err))
+	}
 }
 
 // startObservability brings up the read-only surface bound to insp, or returns
