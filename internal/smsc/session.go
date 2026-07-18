@@ -163,20 +163,23 @@ func (s *session) send(pdu *smpp.PDU) {
 // dropping the link, echoing the sequence number straight from the frame.
 func (s *session) readLoop() {
 	for {
-		// Exit promptly on shutdown instead of re-arming a far-future idle deadline that
-		// would clobber the closer's SetReadDeadline(now) and leave this loop blocked
-		// until idleTimeout — stalling graceful shutdown (which joins this goroutine).
+		// Re-arm the idle deadline each iteration: any PDU (including an enquire_link
+		// keepalive) resets it, so only a truly silent/half-open bind is reaped.
+		_ = s.conn.SetReadDeadline(time.Now().Add(idleTimeout))
+
+		// Check for shutdown AFTER re-arming and immediately before blocking. The closer
+		// sets a past read deadline to unblock this read on shutdown; if that happened
+		// just before the re-arm above, we have clobbered it with a far-future deadline
+		// and would otherwise block until idleTimeout, stalling graceful shutdown (which
+		// joins this goroutine via wg.Wait). The conn's internal lock orders the closer's
+		// SetReadDeadline before ours in exactly that case, so close(quit) is guaranteed
+		// visible here and we exit. If instead our re-arm ran first, the closer's later
+		// past deadline unblocks the ReadPDU below normally.
 		select {
 		case <-s.quit:
 			return
 		default:
 		}
-
-		// Re-arm the idle deadline each iteration: any PDU (including an enquire_link
-		// keepalive) resets it, so only a truly silent/half-open bind is reaped. The
-		// shutdown path sets a past deadline to unblock this read; that nearer deadline
-		// always wins over this future one.
-		_ = s.conn.SetReadDeadline(time.Now().Add(idleTimeout))
 
 		frame, err := smpp.ReadPDU(s.conn)
 		if err != nil {

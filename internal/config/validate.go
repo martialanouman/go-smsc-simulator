@@ -128,6 +128,11 @@ func validateVirtualSMSC(vs *VirtualSMSCConfig) []error {
 	// A wall-clock throughput limit on a seeded deterministic profile would silently
 	// break invariant (a) (the gate short-circuits before the PRNG draws). Chaos mode,
 	// or the already-exempt throughput profiles, are fine.
+	//
+	// NOTE (S5): this checks only the initial profile. When scheduled_transitions are
+	// wired, a seeded transition INTO a throughput profile would attach a wall-clock
+	// gate mid-session on a bind that started deterministic — extend this guard to the
+	// transition targets then.
 	if seeded && vs.ThroughputLimitPerSec != nil && !throughputExempt(vs.Scenario.Profile) {
 		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q] profile %q",
 			ErrSeededThroughputLimit, vs.Name, vs.Scenario.Profile))
