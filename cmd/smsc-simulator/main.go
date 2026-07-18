@@ -29,9 +29,29 @@ import (
 // wedges the CI job it was meant to serve, so the drain is deliberately short.
 const shutdownTimeout = 5 * time.Second
 
+// version is the build's semantic version. It is "dev" for un-stamped local
+// builds and overwritten at release time via -ldflags "-X main.version=vX.Y.Z"
+// (see the Makefile and .goreleaser.yml). GoReleaser writes this same symbol by
+// default, so the tagged release binaries report their exact tag.
+var version = "dev"
+
+// versionLine is what --version prints. Kept out of main so it stays
+// unit-testable without spawning the process.
+func versionLine() string {
+	return "smsc-simulator " + version
+}
+
 func main() {
 	configPath := flag.String("config", "", "path to the YAML configuration file (required)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	// --version is answered before anything else: it must work without a config
+	// file, so it cannot sit behind run's config load.
+	if *showVersion {
+		fmt.Println(versionLine())
+		return
+	}
 
 	// main stays trivial on purpose: all the logic lives in run, which returns
 	// an error instead of exiting. That is what makes startup ordering and

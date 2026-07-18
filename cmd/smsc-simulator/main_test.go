@@ -41,6 +41,21 @@ func writeConfig(t *testing.T, content string) string {
 	return path
 }
 
+// TestVersionLine pins the --version output format. The value is "dev" under
+// `go test` (no ldflags), so this asserts the wiring — the prefix and the
+// injected symbol — rather than any specific release number. The real stamped
+// value is verified by hand via `make build && ./bin/smsc-simulator --version`.
+func TestVersionLine(t *testing.T) {
+	t.Parallel()
+
+	if got, want := versionLine(), "smsc-simulator "+version; got != want {
+		t.Errorf("versionLine() = %q, want %q", got, want)
+	}
+	if version == "" {
+		t.Error("version is empty; the -ldflags -X main.version target would be silently ignored")
+	}
+}
+
 func TestRun_NoConfigFlag(t *testing.T) {
 	t.Parallel()
 

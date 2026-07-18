@@ -1,6 +1,9 @@
 # Build output
 bin/
 
+# GoReleaser output (`make snapshot`, release job)
+dist/
+
 # Test artifacts
 *.out
 *.test

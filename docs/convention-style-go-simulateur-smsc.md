@@ -208,3 +208,18 @@ issues:
 ## 9. Résumé — la revue de style en dix points
 
 Un relecteur vérifie, pour le style seul : `gofmt`/`goimports` verts ; nommage `MixedCaps` avec casse d'acronymes correcte (`smppPDU`, `virtualSMSC`, `smscID`) ; vocabulaire du domaine cohérent (`perBindClock`, `logicalClock`) ; pas de bégaiement ni de `util`/`manager` ; énumérations typées **exactement** alignées sur le `.yml` ; tags `yaml` en `snake_case` corrects, champs optionnels en pointeur, secrets de bind non exposés ; **aucune source de non-déterminisme sur un chemin graîné** (pas de `time.Now()`/PRNG global) ; aucun endpoint mutant ; early-return sans `else` superflu ; aucun anti-idiome du §7. Le fond (concurrence, déterminisme, tests) relève du plan d'exécution et de la stratégie de test.
+
+---
+
+## 10. Commits (Conventional Commits) [MUST]
+
+Les messages de commit suivent **[Conventional Commits](https://www.conventionalcommits.org/)** : `type(scope): description`.
+
+- **Message intégralement en anglais** — type *et* description. C'est une **exception assumée** à la règle « prose en français » du §0 : le commit s'aligne sur le code et les identifiants, déjà en anglais, et le lint de titre de PR l'exige.
+- **Types autorisés** : `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `perf`, `build`, `style`, `revert`.
+- **Scope** = composant `internal/` ou l'ancien id de jalon : `feat(scenario): …`, `feat(s3): …`.
+- **Impact semver** (le dépôt merge en **squash** — le **titre de PR** devient le commit sur `main` et pilote la version) : `fix`/`perf` → **patch**, `feat` → **minor**, un `!` après le type/scope ou un footer `BREAKING CHANGE:` → **major**. Les types `docs`/`chore`/`ci`/`test`/`refactor`/`style` seuls ne déclenchent **aucune** release.
+- **Vérifié en CI** : le job `pr-title` (`.github/workflows/ci.yml`) refuse un titre non conforme ; le job `release` calcule le tag semver et publie la GitHub Release à chaque merge sur `main` (`svu` + `.goreleaser.yml`).
+
+Conforme : `feat: generate release and tag on merge to main` · `fix(smpp): reject a malformed bind PDU length`.
+Non conforme : `feat: génère la release` (français) · `ajoute la release` (pas de type) · `Update main.go` (pas de type, pas conventionnel).

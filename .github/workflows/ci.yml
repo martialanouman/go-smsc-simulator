@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # edited/synchronize so the PR-title lint re-runs when the title is fixed.
+    types: [opened, edited, synchronize, reopened]
   workflow_dispatch: # allow a manual re-run from the Actions tab
 
 permissions:
@@ -68,3 +70,88 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make build
+
+  # pr-title enforces Conventional Commits on the PR title. Merges to main are
+  # squashed, so the title becomes the commit subject on main — the very string
+  # the release job parses to pick the semver bump. A non-conforming title here
+  # would silently produce no release, so it is a hard gate instead.
+  pr-title:
+    name: pr-title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            chore
+            refactor
+            test
+            ci
+            perf
+            build
+            style
+            revert
+
+  # release cuts a semver tag and a GitHub Release from main, but only after the
+  # four Definition-of-Done gates above are green: a tag must never point at a
+  # commit that failed lint/test/vuln/build. It runs solely on a push to main
+  # (i.e. a merged PR), never on the PR itself.
+  release:
+    name: release
+    needs: [lint, test, vuln, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the tag and create the Release
+    # Serialise releases: two merges landing close together must not race to tag.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # svu and the GoReleaser changelog need full history + tags
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # svu computes the next semver from the Conventional Commits since the last
+      # tag. Pinned; bump deliberately, like the other tools.
+      - run: go install github.com/caarlos0/svu/v3@v3.4.1
+      - id: version
+        name: compute next version
+        run: |
+          current="$(svu current)"
+          next="$(svu next)"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          # No feat/fix/breaking commit since the last tag -> svu keeps the same
+          # version. Nothing to release; skip tagging and the Release.
+          if [ "$current" = "$next" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "No releasable commits since $current; skipping release."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Releasing $next (was $current)."
+          fi
+      - name: tag
+        if: steps.version.outputs.release == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.next }}" -m "${{ steps.version.outputs.next }}"
+          git push origin "${{ steps.version.outputs.next }}"
+      - name: release
+        if: steps.version.outputs.release == 'true'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
