@@ -24,9 +24,9 @@ type moEvent struct {
 // disconnectEvent is the Schedule Runner payload for a scheduled_disconnects[] entry. A
 // bind can only ever close ITSELF (the session state is owned by one goroutine, no locks),
 // so scope is evaluated as "should I cut myself?" when this bind's clock reaches the tick:
-// all -> always; oldest -> only the oldest bind then open; random -> a per-bind draw from
-// the bind's schedule PRNG. when decides the moment relative to the triggering submit's
-// response (before_response is handled ahead of the response in handleSubmit).
+// all -> always; oldest -> only the oldest bind then open; random -> an idempotent per-bind
+// coin keyed to (schedule base, tick). when decides the moment relative to the triggering
+// submit's response (before_response is handled ahead of the response in handleSubmit).
 type disconnectEvent struct {
 	scope config.DisconnectScope
 	when  config.DisconnectWhen
@@ -105,9 +105,9 @@ func (s *session) isDisconnectTarget(scope config.DisconnectScope) bool {
 // dueDisconnectBeforeResponse reports whether a scheduled disconnect due at the current
 // clock targets this bind AND fires before_response — so handleSubmit can withhold the
 // triggering submit's response and cut, matching an OutcomeDisconnect before_response. It
-// peeks (DuePending) rather than draining: the event still drains/flushes normally, and a
-// scope: random draw is taken at most once (here on the before path, or in dispatch on the
-// after/quiescence path — never both for the same event).
+// peeks (DuePending) rather than draining: the event still drains/flushes normally, and the
+// scope: random coin is idempotent, so evaluating it here on the before path and again in
+// dispatch on the after/quiescence path always agrees.
 func (s *session) dueDisconnectBeforeResponse() bool {
 	for _, ev := range s.sched.DuePending(s.perBindClock) {
 		if d, ok := ev.Payload.(disconnectEvent); ok &&
