@@ -167,6 +167,15 @@ func TestDecode_Errors(t *testing.T) {
 			frame:   []byte{0, 0, 0, 17, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 1, 0},
 			wantErr: smpp.ErrTruncated,
 		},
+		{
+			// sm_length 0xFF (255) is out of the SMPP v3.4 range (0..254). Decode must
+			// reject it rather than accept a length Encode cannot round-trip — the
+			// decode/encode asymmetry the decoder fuzz surfaced. Body is 16 zero octets
+			// up to sm_length, then 0xFF.
+			name:    "submit_sm sm_length out of range",
+			frame:   []byte{0, 0, 0, 33, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF},
+			wantErr: smpp.ErrBadShortMessage,
+		},
 	}
 
 	for _, tc := range tests {

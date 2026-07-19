@@ -16,7 +16,10 @@ DOCKER_IMAGE          := smsc-simulator:dev
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all check tools build test lint vuln run snapshot docker clean
+.PHONY: all check tools build test fuzz lint vuln run snapshot docker clean
+
+# FUZZTIME bounds each active fuzz target so CI stays quick; override for a deep local run.
+FUZZTIME ?= 30s
 
 all: lint test build
 
@@ -36,6 +39,13 @@ build:
 ## test: the race detector is mandatory, never optional (CLAUDE.md)
 test:
 	go test -race ./...
+
+## fuzz: bounded active fuzzing of the PDU decoder (plan §11 / T2). The seed corpus
+## already runs under `make test`; this drives new inputs. -fuzz takes one target at a
+## time, so the two run in sequence, each bounded by FUZZTIME.
+fuzz:
+	go test -run '^$$' -fuzz '^FuzzReadPDU$$' -fuzztime=$(FUZZTIME) ./internal/smpp
+	go test -run '^$$' -fuzz '^FuzzDecode$$'  -fuzztime=$(FUZZTIME) ./internal/smpp
 
 ## lint: must report zero warnings
 lint:
