@@ -75,6 +75,31 @@ capacité — `healthy`, `flaky-carrier`, `throttling-carrier`, `dead-carrier`,
 `slow-carrier`, `throughput-capped`, `scenario-transitions`, `edge-cases`,
 `tls-carrier`, `minimal`. Toutes démarrent avec `make run CONFIG=examples/<nom>.yml`.
 
+## Déploiement
+
+En conteneur pour la CI ou un environnement de test partagé :
+
+```bash
+docker compose up                            # carrier plaintext clé-en-main (2775 + 9000)
+```
+
+En cluster Kubernetes, le dossier [`deploy/`](deploy/) fournit un manifeste complet —
+un `ConfigMap` (votre `.yml`), un `Deployment` (1 réplique, `runAsNonRoot`,
+`readinessProbe` TCP) et un `Service` ClusterIP exposant `smpp` (2775) et
+`observability` (9000) :
+
+```bash
+kubectl apply -f deploy/
+```
+
+Une seule réplique volontairement : le déterminisme est scopé **par bind**, donc scaler
+donnerait à chaque pod son propre état graîné indépendant. Pour changer de scénario,
+éditez le `ConfigMap` et **relancez** le pod (aucune reconfiguration à chaud ; démarrage
+< 2 s).
+
+Détail complet (image, Compose, isolation en CI) :
+[guide « Déployer (Docker, Compose, Kubernetes) »](docs/guide/how-to/deployer-avec-docker.md).
+
 ## Les 4 invariants
 
 **(a)** Déterminisme par bind • **(b)** Config fail-fast (aucune reconfiguration runtime)
