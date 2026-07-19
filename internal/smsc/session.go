@@ -238,6 +238,9 @@ func (s *session) readLoop() {
 				if s.sched.Len() > 0 {
 					if time.Since(s.lastSubmit) >= s.quiescence {
 						s.flushSchedule() // voie b: silence past the window drains pending events in tick order
+						if s.state == stateClosed {
+							return // a flushed scheduled disconnect cut this bind
+						}
 					}
 					continue
 				}
@@ -401,6 +404,14 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		ShortMessage: msg.ShortMessage,
 		PerBindClock: s.perBindClock,
 	})
+
+	// A scheduled disconnect due at this tick that fires before_response cuts the link
+	// without answering this submit — the same seam as an OutcomeDisconnect before_response.
+	// The event stays pending (peeked, not drained); teardown discards it with the session.
+	if s.dueDisconnectBeforeResponse() {
+		s.state = stateClosed
+		return
+	}
 
 	switch decision.Outcome {
 	case scenario.OutcomeSuccess:

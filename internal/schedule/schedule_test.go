@@ -126,3 +126,31 @@ func TestSchedule_Deterministic(t *testing.T) {
 		t.Fatalf("drain order = %v, want %v", first, want)
 	}
 }
+
+// TestDuePending_PeeksWithoutRemoving is the peek path a before_response scheduled
+// disconnect relies on: DuePending returns the due events, in drain order, but leaves the
+// schedule intact so the events still drain (and still flush at quiescence) normally.
+func TestDuePending_PeeksWithoutRemoving(t *testing.T) {
+	var r Runner
+	r.Schedule(5, "a")
+	r.Schedule(3, "b")
+	r.Schedule(9, "c")
+
+	peek := payloads(r.DuePending(5))
+	if want := []any{"b", "a"}; !reflect.DeepEqual(peek, want) {
+		t.Fatalf("DuePending(5) = %v, want %v", peek, want)
+	}
+	if r.Len() != 3 {
+		t.Fatalf("Len after peek = %d, want 3 (peek must not remove)", r.Len())
+	}
+	// A second peek yields the same, and a later drain still sees every event.
+	if again := payloads(r.DuePending(5)); !reflect.DeepEqual(again, peek) {
+		t.Fatalf("second DuePending(5) = %v, want %v (idempotent)", again, peek)
+	}
+	if drained := payloads(r.DrainDue(5)); !reflect.DeepEqual(drained, peek) {
+		t.Fatalf("DrainDue(5) after peek = %v, want %v", drained, peek)
+	}
+	if r.Len() != 1 {
+		t.Fatalf("Len after drain = %d, want 1", r.Len())
+	}
+}

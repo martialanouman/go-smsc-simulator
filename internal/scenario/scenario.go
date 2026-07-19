@@ -119,8 +119,9 @@ type Engine struct {
 // time and owned by the session's read goroutine — never shared, never locked (same
 // ownership rule as the SMPP session state).
 type BindState struct {
-	rng  *rand.Rand
-	gate *fault.WallWindow // nil unless a throughput cap applies
+	rng       *rand.Rand
+	schedBase uint64            // base for idempotent schedule coins (scope: random disconnect)
+	gate      *fault.WallWindow // nil unless a throughput cap applies
 }
 
 // New builds the engine for a scenario config. limitPerSec is the vSMSC-level
@@ -150,13 +151,25 @@ func (e *Engine) NewBindState(seed *uint64, smscID string, bindOrdinal uint64) *
 	st := &BindState{}
 	if seed != nil {
 		st.rng = rng.NewBind(*seed, smscID, bindOrdinal)
+		st.schedBase = rng.ScheduleBase(*seed, smscID, bindOrdinal)
 	} else {
 		st.rng = rng.NewChaos()
+		st.schedBase = rand.Uint64() // chaos: fixed per bind, not reproducible across runs
 	}
 	if cap, ok := e.effectiveCap(); ok {
 		st.gate = fault.NewWallWindow(cap)
 	}
 	return st
+}
+
+// DisconnectDraw returns the coin for a scope: random scheduled disconnect at tick — whether
+// THIS bind cuts itself. It is a pure, idempotent function of the bind's schedule base and
+// the tick, so peeking it before a submit's response and re-evaluating it when the event
+// drains always agree, and it never perturbs the scenario decision stream (invariant a). A
+// bind can only ever close itself (session state is single-goroutine-owned), so random
+// scope is a per-bind ~50% decision, not a coordinated pick of one bind among many.
+func (st *BindState) DisconnectDraw(tick uint64) bool {
+	return rng.ScheduleCoin(st.schedBase, tick)
 }
 
 // RejectBind reports whether the active profile refuses binds outright — true only
