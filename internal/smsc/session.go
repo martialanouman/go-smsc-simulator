@@ -69,6 +69,15 @@ type session struct {
 	systemID      string
 	perBindClock  uint64
 	scenarioState *scenario.BindState // created at successful bind; nil until then
+	// currentEngine is the profile this bind currently evaluates submits against. It starts
+	// at the SMSC's initial engine and is swapped by a scheduled transition — the only path
+	// that moves the active profile. Owned by readLoop, so no lock.
+	currentEngine *scenario.Engine
+	// transitions is this bind's scheduled profile switches, sorted by at_tick; the cursor
+	// advances with the logical clock (applyDueTransitions). Kept off the Schedule Runner on
+	// purpose — a transition is latent config, never quiescence-flushed (see schedule_events).
+	transitions      []config.ScheduledTransition
+	transitionCursor int
 
 	// sched is this bind's pending tick-scheduled events (DLRs at S4). It is drained by
 	// the read goroutine — on a submit that advances the clock (voie a) or, after the
@@ -330,6 +339,7 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 	s.canSubmit = pdu.CommandID != smpp.BindReceiver
 	s.canReceive = pdu.CommandID != smpp.BindTransmitter
 	s.scenarioState = s.smsc.scenario.NewBindState(s.smsc.cfg.Seed, s.smsc.cfg.Name, s.id)
+	s.currentEngine = s.smsc.scenario // starts on the initial profile; transitions swap it
 	s.bound.Store(true)
 	s.smsc.binds.add(bindInfo{
 		id:          s.id,
@@ -376,7 +386,10 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	// engine shuts down mid-latency we abandon the submit without advancing either
 	// clock, so logical_clock never counts a PDU the recorder never stored (plan §1.5).
 	tick := s.perBindClock + 1
-	decision := s.smsc.scenario.Evaluate(s.scenarioState, tick)
+	// Apply any transition due at this tick before evaluating, so the submit at at_tick runs
+	// under the new profile (the switch is keyed to the logical clock, never the wall clock).
+	s.applyDueTransitions(tick)
+	decision := s.currentEngine.Evaluate(s.scenarioState, tick)
 	if !s.serveLatency(decision.LatencyMS) {
 		return // engine shutting down: abandon this submit rather than sleep on
 	}

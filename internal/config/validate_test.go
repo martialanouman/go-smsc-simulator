@@ -169,6 +169,10 @@ func TestValidate_SchemaCoherence(t *testing.T) {
       profile: flaky-carrier
       params: { success_rate: 0.9, error_mix: { ESME_RSYSERR: 1 } }
       latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "seeded transition into throughput profile", wantErr: config.ErrSeededThroughputLimit, errHint: "scheduled_transitions[0].to_profile", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    scheduled_transitions: [ { at_tick: 100, to_profile: throttling-carrier } ]`},
 		{name: "throughput-capped without cap", wantErr: config.ErrMissingParam, errHint: "throughput_cap_per_sec", tail: `    scenario:
       profile: throughput-capped
       latency: { distribution: fixed, params: { ms: 20 } }`},

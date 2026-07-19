@@ -2,6 +2,7 @@ package smsc
 
 import (
 	"log/slog"
+	"sort"
 
 	"github.com/martialanouman/go-smsc-simulator/internal/config"
 	"github.com/martialanouman/go-smsc-simulator/internal/schedule"
@@ -50,6 +51,39 @@ func (s *session) scheduleConfiguredEvents() {
 	}
 	for _, d := range s.smsc.cfg.ScheduledDisconnects {
 		s.sched.Schedule(d.AtTick, disconnectEvent{scope: d.Scope, when: d.When})
+	}
+
+	// Scenario transitions are NOT put on the Runner. The Runner exists to drain pending
+	// OUTPUT (DLR/MO/disconnect) — and its quiescence flush releases everything at once when
+	// a bind falls silent. A transition emits nothing; it only changes how LATER submits are
+	// evaluated. Flushing it early would apply it before the clock truly reached at_tick,
+	// altering subsequent outcomes based on wall-clock silence and breaking invariant (a).
+	// So transitions live in a per-bind cursor, advanced purely by the logical clock at
+	// submit time (applyDueTransitions); a bind left idle simply never crosses them.
+	s.transitions = sortedTransitions(s.smsc.cfg.ScheduledTransitions)
+}
+
+// sortedTransitions returns the transitions ordered by at_tick, stable so same-tick entries
+// keep config order (the last one at a tick wins). It copies, leaving the config untouched.
+func sortedTransitions(in []config.ScheduledTransition) []config.ScheduledTransition {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]config.ScheduledTransition, len(in))
+	copy(out, in)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].AtTick < out[j].AtTick })
+	return out
+}
+
+// applyDueTransitions applies every scheduled transition whose at_tick the clock has now
+// reached, BEFORE the submit at that tick is evaluated — so the submit AT at_tick already
+// runs under the new profile (spec §6.1: "healthy 0-199 -> dead-carrier 200-399" makes tick
+// 200 itself dead-carrier). The cursor only moves forward, keyed to the monotonic clock, so
+// the whole sequence is a pure function of (transitions, tick): fully reproducible.
+func (s *session) applyDueTransitions(tick uint64) {
+	for s.transitionCursor < len(s.transitions) && s.transitions[s.transitionCursor].AtTick <= tick {
+		s.applyTransition(s.transitions[s.transitionCursor].ToProfile)
+		s.transitionCursor++
 	}
 }
 
@@ -106,6 +140,20 @@ func (s *session) dispatch(ev schedule.Event) {
 	default:
 		// No other payload type is scheduled in this build; ignore defensively.
 	}
+}
+
+// applyTransition swaps this bind's active engine to the target profile and records it on
+// the SMSC's read-only observable. buildEngines guarantees an engine exists for every
+// transition target, so the lookup cannot miss; a defensive miss is ignored rather than
+// panicking a live session.
+func (s *session) applyTransition(to config.Profile) {
+	engine, ok := s.smsc.engines[to]
+	if !ok {
+		s.logger.Warn("scheduled transition to unbuilt profile ignored", slog.String("to_profile", string(to)))
+		return
+	}
+	s.currentEngine = engine
+	s.smsc.setActiveProfile(to)
 }
 
 // emitMO sends a scheduled mobile-originated deliver_sm. Like a DLR it can only travel on a

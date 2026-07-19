@@ -20,8 +20,18 @@ type virtualSMSC struct {
 	listener net.Listener
 	recorder *recorder.Recorder
 	scenario *scenario.Engine
-	binds    *bindRegistry
-	logger   *slog.Logger
+	// engines holds one immutable Engine per profile this SMSC can run: the initial profile
+	// plus every scheduled_transitions target. A session swaps its current engine pointer to
+	// engines[toProfile] when a transition fires — the only path that moves active_scenario
+	// (spec §6.1). Built once at boot, never mutated, so concurrent reads need no lock.
+	engines map[config.Profile]*scenario.Engine
+	binds   *bindRegistry
+	logger  *slog.Logger
+
+	// activeProfile is the read-only observable of the currently active profile. It is a
+	// best-effort cross-bind view (like logicalClock, its order across concurrent binds on
+	// different clocks is not reproducible): whichever bind last applied a transition wins.
+	activeProfile atomic.Value // string
 
 	// logicalClock is the per-virtual-SMSC submit_sm counter — a global assertion
 	// observable only (GET /logical-clock), never a scheduling reference; its order
@@ -37,14 +47,40 @@ type virtualSMSC struct {
 }
 
 func newVirtualSMSC(cfg config.VirtualSMSCConfig, ln net.Listener, logger *slog.Logger) *virtualSMSC {
-	return &virtualSMSC{
+	initial := scenario.New(cfg.Scenario, cfg.ThroughputLimitPerSec)
+	v := &virtualSMSC{
 		cfg:      cfg,
 		listener: ln,
 		recorder: recorder.New(cfg.PDUBufferSize),
-		scenario: scenario.New(cfg.Scenario, cfg.ThroughputLimitPerSec),
+		scenario: initial,
+		engines:  buildEngines(cfg, initial),
 		binds:    newBindRegistry(),
 		logger:   logger.With(slog.String("virtual_smsc", cfg.Name)),
 	}
+	v.activeProfile.Store(string(cfg.Scenario.Profile))
+	return v
+}
+
+// buildEngines assembles the engine per profile a session can switch to: the initial
+// profile (the fully configured engine, so a transition BACK restores its params/DLR) plus
+// one bare engine per distinct scheduled_transitions target. Transition targets name a bare
+// profile with no params — enough for the parameterless reference profiles (healthy,
+// dead-carrier, slow-carrier); a target needing tuned knobs is out of scope (spec §6.1).
+func buildEngines(cfg config.VirtualSMSCConfig, initial *scenario.Engine) map[config.Profile]*scenario.Engine {
+	engines := map[config.Profile]*scenario.Engine{cfg.Scenario.Profile: initial}
+	for _, tr := range cfg.ScheduledTransitions {
+		if _, ok := engines[tr.ToProfile]; ok {
+			continue
+		}
+		engines[tr.ToProfile] = scenario.New(config.ScenarioConfig{Profile: tr.ToProfile}, cfg.ThroughputLimitPerSec)
+	}
+	return engines
+}
+
+// setActiveProfile records the profile a bind just transitioned to, for the read-only
+// observable. Called from a session's read goroutine when a transition fires.
+func (v *virtualSMSC) setActiveProfile(p config.Profile) {
+	v.activeProfile.Store(string(p))
 }
 
 // view assembles the read-only summary of this virtual SMSC.
@@ -52,7 +88,7 @@ func (v *virtualSMSC) view() observability.VirtualSMSCView {
 	return observability.VirtualSMSCView{
 		Name:          v.cfg.Name,
 		Port:          v.cfg.Port,
-		ActiveProfile: string(v.cfg.Scenario.Profile),
+		ActiveProfile: v.activeProfile.Load().(string),
 		BindCount:     v.binds.count(),
 		LogicalClock:  v.logicalClock.Load(),
 		RecordedPDUs:  v.recorder.Len(),
