@@ -53,8 +53,12 @@ func SelfSigned() (tls.Certificate, error) {
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 		IsCA:                  true,
-		DNSNames:              []string{"localhost"},
-		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+		// Loopback-only SANs by design: a hostname-verifying client can reach this cert
+		// only over loopback. A non-loopback client (a docker-compose service dialed by
+		// name) must be given a cert_file/key_file whose SANs cover that name (see
+		// config.TLSConfig). Kept intentionally minimal rather than guessing deploy names.
+		DNSNames:    []string{"localhost"},
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
