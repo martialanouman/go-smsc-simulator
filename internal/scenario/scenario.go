@@ -261,8 +261,13 @@ func (e *Engine) Evaluate(st *BindState, t uint64) Decision {
 // enabled and the cadence fires. It is a pure function of the tick: t % edgeEveryTicks
 // selects the injecting ticks, and (t/edgeEveryTicks - 1) rotates through edgeKinds in
 // order. No wall clock, no PRNG — reproducible per bind on replay (invariant a).
+//
+// The t==0, edgeEveryTicks!=0 and len!=0 conditions are guards, not dead checks: submit
+// ticks are perBindClock+1 so they start at 1, but a t of 0 would underflow the rotation
+// index, and a zero cadence or empty kinds list would divide by zero in the modulo. New()
+// upholds all three today; the guards keep this total for any future caller.
 func (e *Engine) edgeCaseFor(t uint64) (smpp.EdgeCaseKind, bool) {
-	if !e.edgeEnabled || len(e.edgeKinds) == 0 || e.edgeEveryTicks == 0 || t%e.edgeEveryTicks != 0 {
+	if !e.edgeEnabled || t == 0 || len(e.edgeKinds) == 0 || e.edgeEveryTicks == 0 || t%e.edgeEveryTicks != 0 {
 		return 0, false
 	}
 	idx := (t/e.edgeEveryTicks - 1) % uint64(len(e.edgeKinds))

@@ -94,6 +94,10 @@ type ScenarioConfig struct {
 // is only meaningful when ProtocolEdgeCasesEnabled is true; setting it while the master
 // switch is off is a dead config, rejected at load. Both knobs are optional: an absent
 // block (or absent field) means inject on every tick, rotating through all three kinds.
+//
+// Injection is a property of the scenario, so — like the DLR, latency and params knobs —
+// it follows the ACTIVE profile: a scheduled_transition switches to a bare reference
+// profile with injection off, and a transition back to the initial profile restores it.
 type ProtocolEdgeCasesConfig struct {
 	InjectEveryTicks *uint64        `yaml:"inject_every_ticks"` // nil => 1; a malformed resp every N ticks
 	Kinds            []EdgeCaseKind `yaml:"kinds"`              // empty => all three, rotated deterministically

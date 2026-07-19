@@ -19,7 +19,6 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -170,20 +169,19 @@ func BenchmarkThroughput(b *testing.B) {
 	addr := startLoad(b, healthyConfig("bench-throughput"))
 
 	const conns = 8
-	var done atomic.Int64
-
-	b.ResetTimer()
-	start := time.Now()
-	var wg sync.WaitGroup
 	per := b.N / conns
 	if per == 0 {
 		per = 1
 	}
+
+	b.ResetTimer()
+	start := time.Now()
+	var wg sync.WaitGroup
 	for i := 0; i < conns; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			done.Add(int64(drive(b, addr, per)))
+			drive(b, addr, per)
 		}()
 	}
 	wg.Wait()
@@ -191,5 +189,4 @@ func BenchmarkThroughput(b *testing.B) {
 	b.StopTimer()
 
 	b.ReportMetric(float64(conns*per)/elapsed.Seconds(), "msg/s")
-	_ = done.Load()
 }
