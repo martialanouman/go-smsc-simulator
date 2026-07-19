@@ -118,7 +118,7 @@ func startWith(t *testing.T, cfg config.VirtualSMSCConfig) harness {
 
 	name := cfg.Name
 	logger := observability.NewLogger(io.Discard, slog.LevelInfo)
-	engine, err := smsc.New([]config.VirtualSMSCConfig{cfg}, logger)
+	engine, err := smsc.New([]config.VirtualSMSCConfig{cfg}, nil, logger)
 	if err != nil {
 		t.Fatalf("smsc.New: %v", err)
 	}
@@ -131,7 +131,7 @@ func startWith(t *testing.T, cfg config.VirtualSMSCConfig) harness {
 		}
 	})
 
-	srv, err := observability.NewServer(0, logger, engine)
+	srv, err := observability.NewServer(0, logger, engine, nil)
 	if err != nil {
 		t.Fatalf("observability.NewServer: %v", err)
 	}

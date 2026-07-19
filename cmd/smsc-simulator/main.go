@@ -21,7 +21,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/martialanouman/go-smsc-simulator/internal/config"
+	"github.com/martialanouman/go-smsc-simulator/internal/metrics"
 	"github.com/martialanouman/go-smsc-simulator/internal/observability"
 	"github.com/martialanouman/go-smsc-simulator/internal/smsc"
 )
@@ -82,9 +85,11 @@ func run(ctx context.Context, configPath string) error {
 
 	logger := observability.NewLogger(os.Stdout, slog.LevelInfo)
 
-	// STUB S6: the Prometheus registry is created and threaded through once a
-	// collector and /metrics endpoint exist to consume it. Constructing one here
-	// now would only be a discarded allocation. See plan §10.
+	// The metrics collectors register on a dedicated (non-global) registry, threaded to
+	// the engine (which increments them) and to the observability surface (which exposes
+	// them at GET /metrics). Building these opens no socket, so it is fine before the gate.
+	reg := observability.NewRegistry()
+	m := metrics.New(reg)
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -93,12 +98,12 @@ func run(ctx context.Context, configPath string) error {
 
 	// The engine binds the SMPP listeners first (fail-fast on a port clash), then the
 	// observability surface is built against it as its read-only Inspector.
-	engine, err := smsc.New(cfg.VirtualSMSCs, logger)
+	engine, err := smsc.New(cfg.VirtualSMSCs, m, logger)
 	if err != nil {
 		return err
 	}
 
-	srv, err := startObservability(cfg, logger, engine)
+	srv, err := startObservability(cfg, logger, engine, reg)
 	if err != nil {
 		// The engine's listeners are already open; close them so a failed boot leaves
 		// no half-open SMPP port behind. Serve never ran, so this returns at once.
@@ -165,13 +170,13 @@ func stopEngine(ctx context.Context, logger *slog.Logger, engine *smsc.Engine) {
 // startObservability brings up the read-only surface bound to insp, or returns
 // (nil, nil) when the observability block is absent — the "black box" mode of spec
 // §5.2, where the simulator exposes no HTTP at all.
-func startObservability(cfg *config.Config, logger *slog.Logger, insp observability.Inspector) (*observability.Server, error) {
+func startObservability(cfg *config.Config, logger *slog.Logger, insp observability.Inspector, reg prometheus.Gatherer) (*observability.Server, error) {
 	if cfg.Observability == nil {
 		logger.Info("no observability block: running as a black box, no HTTP surface")
 		return nil, nil //nolint:nilnil // absence of a server is a valid, expected outcome here
 	}
 
-	srv, err := observability.NewServer(cfg.Observability.HTTPPort, logger, insp)
+	srv, err := observability.NewServer(cfg.Observability.HTTPPort, logger, insp, reg)
 	if err != nil {
 		return nil, err
 	}

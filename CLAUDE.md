@@ -31,7 +31,7 @@ make docker                # build l'image de distribution
 
 Un **binaire unique** (`cmd/smsc-simulator`) héberge N **SMSC virtuels** décrits dans le `.yml`, plus une **surface HTTP read-only** d'observabilité.
 
-Composants (`internal/`) : `config` (chargement + validation fail-fast du `.yml`), `smpp` (codec PDU côté serveur + machine à états de session), `smsc` (SMPP Server Engine : listener + goroutines par connexion), `scenario` (catalogue des 6 profils + sélection de résultat pondérée), `fault` (latence, timeout, disconnect), `schedule` (Schedule Runner : DLR/MO/déconnexions/transitions par tick + flush de quiescence), `recorder` (tampon circulaire des `submit_sm`), `rng` (PRNG graînée par bind), `metrics` (Prometheus), `observability` (slog + serveur read-only).
+Composants (`internal/`) : `config` (chargement + validation fail-fast du `.yml`), `smpp` (codec PDU côté serveur + machine à états de session), `smsc` (SMPP Server Engine : listener + goroutines par connexion), `scenario` (catalogue des 6 profils + sélection de résultat pondérée), `fault` (latence, timeout, disconnect), `schedule` (Schedule Runner : DLR/MO/déconnexions/transitions par tick + flush de quiescence), `recorder` (tampon circulaire des `submit_sm`), `rng` (PRNG graînée par bind), `tlscert` (cert TLS auto-signé/chargé par instance, au boot), `metrics` (collecteurs Prometheus par SMSC virtuel, labels bornés, exposés en `GET /metrics`), `observability` (slog + serveur read-only).
 
 **Flux d'un `submit_sm`** : décodage PDU → Scenario Engine (profil actif, incrémente `per_bind_clock`/`logical_clock`) → sélection de résultat pondérée `(seed, per_bind_clock)` → Fault Injector (latence/erreur/timeout/disconnect) → `submit_sm_resp` → DLR planifié dans `pending_logical_schedule` → PDU enregistrée. Aucune base externe : tout est en mémoire, borné, éphémère.
 
@@ -41,6 +41,7 @@ Composants (`internal/`) : `config` (chargement + validation fail-fast du `.yml`
 cmd/smsc-simulator/main.go
 internal/config  internal/smpp  internal/smsc  internal/scenario  internal/fault
 internal/schedule  internal/recorder  internal/rng  internal/metrics  internal/observability
+internal/tlscert (génération/chargement du certificat TLS par instance, au boot)
 internal/smpptest (client SMPP in-process pour les tests)
 examples/*.yml   deploy/   docs/   Dockerfile   docker-compose.yml
 ```

@@ -20,6 +20,15 @@ func uniformLatency(min, max uint64) config.LatencyConfig {
 	return config.LatencyConfig{Distribution: config.LatencyUniform, Params: config.LatencyParams{MinMS: &min, MaxMS: &max}}
 }
 
+func TestEngine_ProfileReportsCatalogueProfile(t *testing.T) {
+	t.Parallel()
+
+	e := scenario.New(config.ScenarioConfig{Profile: config.ProfileSlowCarrier, Latency: uniformLatency(2000, 4000)}, nil)
+	if got := e.Profile(); got != config.ProfileSlowCarrier {
+		t.Fatalf("Profile() = %q, want %q", got, config.ProfileSlowCarrier)
+	}
+}
+
 func TestEngine_HealthyAlwaysSucceeds(t *testing.T) {
 	t.Parallel()
 

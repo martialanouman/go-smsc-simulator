@@ -10,14 +10,17 @@ package smsc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"sync"
 
 	"github.com/martialanouman/go-smsc-simulator/internal/config"
 	"github.com/martialanouman/go-smsc-simulator/internal/observability"
 	"github.com/martialanouman/go-smsc-simulator/internal/recorder"
+	"github.com/martialanouman/go-smsc-simulator/internal/tlscert"
 )
 
 // Engine hosts every virtual SMSC in one process and implements
@@ -46,11 +49,30 @@ type Engine struct {
 // endpoints are already live (mirrors observability.NewServer, plan §6). On any
 // bind failure it closes the listeners already opened and returns the error, so no
 // half-open engine leaks.
-func New(cfgs []config.VirtualSMSCConfig, logger *slog.Logger) (*Engine, error) {
+func New(cfgs []config.VirtualSMSCConfig, m metricsSink, logger *slog.Logger) (*Engine, error) {
+	if m == nil {
+		m = noopMetrics{} // black-box boots and tests may pass no sink; never nil-check the hot path
+	}
 	e := &Engine{
 		byName: make(map[string]*virtualSMSC, len(cfgs)),
 		logger: logger,
 		quit:   make(chan struct{}),
+	}
+
+	// Pre-load (or generate) every TLS cert BEFORE opening any listener. Config validation
+	// only existence-checks cert files, so a present-but-malformed or unreadable PEM would
+	// otherwise surface here — after prior instances' ports are already open, breaking the
+	// fail-fast promise (invariant b). Loading up front keeps a cert error truly port-free.
+	// Generation is boot-time only, off the deterministic path.
+	certs := make(map[string]tls.Certificate, len(cfgs))
+	for _, cfg := range cfgs {
+		if cfg.TLS.Enabled {
+			cert, err := tlscert.LoadOrGenerate(cfg.TLS)
+			if err != nil {
+				return nil, fmt.Errorf("tls for %q: %w", cfg.Name, err)
+			}
+			certs[cfg.Name] = cert
+		}
 	}
 
 	for _, cfg := range cfgs {
@@ -59,7 +81,15 @@ func New(cfgs []config.VirtualSMSCConfig, logger *slog.Logger) (*Engine, error) 
 			e.closeListeners()
 			return nil, fmt.Errorf("listen on smpp port %d for %q: %w", cfg.Port, cfg.Name, err)
 		}
-		v := newVirtualSMSC(cfg, ln, logger)
+		// TLS is per virtual SMSC: wrap the listener so Accept yields *tls.Conn, transparent
+		// to acceptLoop and the session. The cert was pre-loaded above, so nothing here can fail.
+		if cfg.TLS.Enabled {
+			ln = tls.NewListener(ln, &tls.Config{
+				Certificates: []tls.Certificate{certs[cfg.Name]},
+				MinVersion:   tls.VersionTLS12,
+			})
+		}
+		v := newVirtualSMSC(cfg, ln, m, logger)
 		e.smscs = append(e.smscs, v)
 		e.byName[cfg.Name] = v
 	}
@@ -142,8 +172,28 @@ func (e *Engine) acceptLoop(v *virtualSMSC) {
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
+			// Last-resort panic boundary, scoped to this one session: a panic here must
+			// not escape to crash the process or the other virtual SMSCs (S6/T1).
+			defer e.recoverSession(v, id)
 			newSession(id, conn, v, e.quit).run()
 		}()
+	}
+}
+
+// recoverSession is the last-resort panic boundary for a single session goroutine.
+// A panic in one session (a codec bug, say) must never take down the process, its
+// accept loop, or the sibling virtual SMSCs — so it recovers here, logs loudly with
+// the offending virtual SMSC, bind id, panic value and stack, and lets the goroutine
+// unwind cleanly (wg.Done, deferred outside, still runs). It is deliberately scoped to
+// one session: never a global recover that would mask a determinism bug across
+// instances (S6/T1, CLAUDE.md "recover de dernier ressort par SMSC virtuel").
+func (e *Engine) recoverSession(v *virtualSMSC, id uint64) {
+	if r := recover(); r != nil {
+		e.logger.Error("session panic recovered",
+			slog.String("virtual_smsc", v.cfg.Name),
+			slog.Uint64("bind_id", id),
+			slog.Any("panic", r),
+			slog.String("stack", string(debug.Stack())))
 	}
 }
 

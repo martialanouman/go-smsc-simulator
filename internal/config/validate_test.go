@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -180,6 +181,18 @@ func TestValidate_SchemaCoherence(t *testing.T) {
     scenario:
       profile: healthy
       latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "tls cert_file without key_file", wantErr: config.ErrTLSCertKeyMismatch, errHint: "cert_file", tail: `    tls: { enabled: true, cert_file: /tmp/nope.pem }
+    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "tls cert files missing", wantErr: config.ErrTLSCertNotFound, errHint: "cert_file", tail: `    tls: { enabled: true, cert_file: /does/not/exist.pem, key_file: /does/not/exist.key }
+    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "tls cert set but disabled", wantErr: config.ErrTLSCertWithoutEnabled, errHint: "tls", tail: `    tls: { enabled: false, cert_file: /does/not/exist.pem, key_file: /does/not/exist.key }
+    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }`},
 		{name: "observability port collides with smsc", wantErr: config.ErrDuplicatePort, errHint: "observability.http_port", yaml: `observability:
   http_port: 2775
 virtual_smscs:
@@ -294,6 +307,41 @@ func TestLoad_ParsesFullSchema(t *testing.T) {
 	}
 	if got := vs.ScheduledTransitions[1].ToProfile; got != config.ProfileHealthy {
 		t.Errorf("ScheduledTransitions[1].ToProfile = %q, want %q", got, config.ProfileHealthy)
+	}
+}
+
+// TestLoad_TLSSuppliedCertFiles pins the supplied-cert config path: cert_file/key_file
+// decode and validate when both files exist. Validation checks existence only — the PEM
+// parse is deliberately deferred to engine boot — so dummy files suffice here.
+func TestLoad_TLSSuppliedCertFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "cert.pem")
+	keyPath := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, []byte("placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	content := baseSMSC + `    tls:
+      enabled: true
+      cert_file: ` + certPath + `
+      key_file: ` + keyPath + `
+    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }`
+	path := writeTemp(t, "tls-supplied.yml", content)
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load with supplied cert files = %v, want success", err)
+	}
+	vs := cfg.VirtualSMSCs[0]
+	if !vs.TLS.Enabled || vs.TLS.CertFile != certPath || vs.TLS.KeyFile != keyPath {
+		t.Errorf("TLS = %+v, want enabled with cert_file=%q key_file=%q", vs.TLS, certPath, keyPath)
 	}
 }
 

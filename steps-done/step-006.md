@@ -1,7 +1,7 @@
 # Step 006 — S6 · Multi-SMSC + TLS par instance + métriques Prometheus
 
 > Plan de référence : `docs/plan-execution-simulateur-smsc.md` §10.
-> **Statut : ⏳ À FAIRE.**
+> **Statut : ✅ LIVRÉ** (`feat(s6)`). Isolement multi-instance par `recover`, TLS par SMSC virtuel (cert auto-signé ou fourni), et métriques Prometheus par instance à labels bornés exposées en `GET /metrics`.
 
 ## Objectif
 

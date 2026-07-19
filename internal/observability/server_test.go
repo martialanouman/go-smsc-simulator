@@ -20,7 +20,7 @@ func startServer(t *testing.T, insp observability.Inspector) string {
 	t.Helper()
 
 	logger := observability.NewLogger(io.Discard, slog.LevelInfo)
-	srv, err := observability.NewServer(0, logger, insp)
+	srv, err := observability.NewServer(0, logger, insp, nil)
 	if err != nil {
 		t.Fatalf("NewServer() = %v, want no error", err)
 	}
@@ -135,7 +135,7 @@ func TestServer_EphemeralPortIsResolved(t *testing.T) {
 	t.Parallel()
 
 	logger := observability.NewLogger(io.Discard, slog.LevelInfo)
-	srv, err := observability.NewServer(0, logger, nil)
+	srv, err := observability.NewServer(0, logger, nil, nil)
 	if err != nil {
 		t.Fatalf("NewServer() = %v, want no error", err)
 	}
