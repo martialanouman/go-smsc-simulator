@@ -84,6 +84,40 @@ func TestE2E_ScheduledDisconnect_BeforeResponse(t *testing.T) {
 	pollBindsEmpty(t, h.baseURL, "carrier-disc-before")
 }
 
+// TestE2E_ScheduledDisconnect_FiresUnderTimeoutTraffic is a regression guard: a scheduled
+// disconnect due at a tick a timeout profile keeps advancing must still fire via the normal
+// drain, even though the triggering submit gets no response. Without draining on the timeout
+// path the cut would never happen under continuous traffic (the quiescence flush never
+// triggers while submits keep arriving), leaving the bind stuck open.
+func TestE2E_ScheduledDisconnect_FiresUnderTimeoutTraffic(t *testing.T) {
+	t.Parallel()
+
+	mode := config.DeadCarrierTimeoutAll
+	cfg := baseConfig("carrier-disc-timeout", pu64(1), config.ScenarioConfig{
+		Profile: config.ProfileDeadCarrier,
+		Params:  config.ScenarioParams{Mode: &mode},
+		Latency: config.LatencyConfig{Distribution: config.LatencyFixed, Params: config.LatencyParams{MS: pu64(0)}},
+	})
+	cfg.ScheduledDisconnects = []config.ScheduledDisconnect{
+		{AtTick: 2, Scope: config.DisconnectScopeAll, When: config.DisconnectAfterResponse},
+	}
+	h := startWith(t, cfg)
+	client := smpptest.Dial(t, h.smppAddr)
+	client.BindTransceiver(testSystemID, testPassword)
+
+	// Every submit times out (no response), so drive them async and watch for the cut. A
+	// correct impl cuts the bind at tick 2 despite the continuous timeout traffic.
+	cut := false
+	for i := 0; i < 6 && !cut; i++ {
+		client.SubmitAsync("33600000000", "33611111111", "m")
+		cut = client.ClosedWithin(80 * time.Millisecond)
+	}
+	if !cut {
+		t.Fatal("scheduled disconnect never fired on a timeout profile under continuous traffic")
+	}
+	pollBindsEmpty(t, h.baseURL, "carrier-disc-timeout")
+}
+
 // TestE2E_ScheduledDisconnect_FlushedAtQuiescence is invariant (d) for disconnects: a cut
 // scheduled beyond the ticks a bind reaches still fires via the quiescence flush once the
 // bind falls silent, rather than being frozen.

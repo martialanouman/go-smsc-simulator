@@ -443,9 +443,11 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		// A non-ROK submit_sm_resp carries no message_id body.
 		s.send(&smpp.PDU{CommandID: smpp.SubmitSMResp, CommandStatus: decision.Status, SequenceNumber: pdu.SequenceNumber})
 	case scenario.OutcomeTimeout:
-		// Withhold the response entirely; readLoop keeps reading so the client can send
-		// more (its own response_timeout fires eventually).
-		return
+		// Withhold the response entirely; readLoop keeps reading so the client can send more
+		// (its own response_timeout fires eventually). Fall through to the drain: this submit
+		// still advanced the clock, so any scheduled MO/disconnect due at this tick must fire —
+		// otherwise a pure-timeout profile under continuous traffic would freeze the schedule
+		// (the quiescence flush never triggers while submits keep arriving).
 	case scenario.OutcomeDisconnect:
 		if decision.DisconnectWhen == config.DisconnectAfterResponse {
 			s.send(&smpp.PDU{
