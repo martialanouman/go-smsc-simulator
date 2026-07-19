@@ -85,6 +85,13 @@ d'événements planifiés à venir (`pending_logical_schedule`). Cet ensemble es
    sans nouveau `submit_sm`, qui vide les événements en attente **dans l'ordre de tick
    déterministe**.
 
+![Frise temporelle : trois submit_sm font avancer per_bind_clock de 1 à 3 ; le premier
+planifie un DLR pour le tick 6 ; le trafic cesse avant le tick 6, donc sans flush le DLR
+ne partirait jamais ; le flush de quiescence, déclenché après quiescence_flush_ms, draine
+le DLR en attente dans l'ordre de tick.](images/quiescence-flush.svg)
+
+<sub>Source éditable : [`images/quiescence-flush.mmd`](images/quiescence-flush.mmd) (Mermaid).</sub>
+
 Ce que le flush préserve : la **séquence et le contenu** des événements (l'ordre des
 DLR, leurs résultats, leur corrélation). Ce qu'il abandonne, sciemment : la **latence
 murale absolue** d'un événement au repos — un DLR « à 5 ticks » sera drainé ~250 ms

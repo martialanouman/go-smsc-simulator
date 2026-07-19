@@ -1,0 +1,26 @@
+%% Source Mermaid de quiescence-flush.svg. Régénérer avec : make diagrams
+%% Éditer ce fichier (jamais le SVG dérivé), puis relancer make diagrams.
+sequenceDiagram
+    autonumber
+    participant E as ESME (client SMPP)
+    participant S as SMSC virtuel
+
+    Note over S: per_bind_clock = 0
+
+    E->>S: submit_sm
+    Note over S: tick 1 — DLR planifié pour le tick 1+5 = 6
+    S-->>E: submit_sm_resp
+
+    E->>S: submit_sm
+    Note over S: tick 2
+    S-->>E: submit_sm_resp
+
+    E->>S: submit_sm
+    Note over S: tick 3
+    S-->>E: submit_sm_resp
+
+    Note over E,S: … le trafic cesse (silence) …
+    Note over S: sans flush, per_bind_clock resterait à 3 :<br/>le DLR dû au tick 6 ne partirait jamais
+
+    Note over S: flush de quiescence<br/>après quiescence_flush_ms (défaut 250 ms)
+    S-->>E: deliver_sm (DLR) — drainé dans l'ordre de tick
