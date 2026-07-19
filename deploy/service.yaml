@@ -6,6 +6,12 @@ metadata:
   name: smsc-simulator
   labels:
     app: smsc-simulator
+  annotations:
+    # Annotation-based Prometheus discovery (portable, no CRD). If you run the Prometheus
+    # Operator, prefer a ServiceMonitor targeting the `observability` port instead.
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9000"
+    prometheus.io/path: "/metrics"
 spec:
   type: ClusterIP
   selector:
