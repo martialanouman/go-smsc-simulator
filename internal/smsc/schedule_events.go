@@ -162,7 +162,6 @@ func (s *session) applyTransition(to config.Profile) {
 		return
 	}
 	s.currentEngine = engine
-	s.currentProfile = string(to)
 	s.smsc.setActiveProfile(to)
 }
 

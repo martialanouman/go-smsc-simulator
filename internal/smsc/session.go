@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 
@@ -71,13 +72,11 @@ type session struct {
 	scenarioState *scenario.BindState // created at successful bind; nil until then
 	// currentEngine is the profile this bind currently evaluates submits against. It starts
 	// at the SMSC's initial engine and is swapped by a scheduled transition — the only path
-	// that moves the active profile. Owned by readLoop, so no lock.
+	// that moves the active profile. It also sources the served-latency label (via
+	// currentEngine.Profile()), so latency is attributed to THIS bind's active scenario
+	// rather than the SMSC-global activeProfile (a last-writer value under concurrent
+	// per-bind transitions). Owned by readLoop, so no lock.
 	currentEngine *scenario.Engine
-	// currentProfile is the name of currentEngine's profile, tracked per bind so the served
-	// latency metric is labelled by THIS bind's active scenario (not the SMSC-global
-	// activeProfile, which under concurrent per-bind transitions is a last-writer value that
-	// could misattribute latency). Owned by readLoop, so no lock.
-	currentProfile string
 	// transitions is this bind's scheduled profile switches, sorted by at_tick; the cursor
 	// advances with the logical clock (applyDueTransitions). Kept off the Schedule Runner on
 	// purpose — a transition is latent config, never quiescence-flushed (see schedule_events).
@@ -132,6 +131,7 @@ func (s *session) run() {
 	// wait for unbind_resp.
 	go func() {
 		defer close(closerDone)
+		defer s.recoverGoroutine("closer") // runs before close(closerDone) on panic, so teardown still unblocks
 		select {
 		case <-s.quit:
 			// Unblock the read first, then queue the unbind: if the writer is wedged, the
@@ -179,6 +179,7 @@ func (s *session) run() {
 // channel is closed (clean teardown) or a write fails (broken peer).
 func (s *session) writeLoop() {
 	defer close(s.writerClosed)
+	defer s.recoverGoroutine("writeLoop") // runs before close(s.writerClosed) on panic, so teardown still unblocks
 	for b := range s.outbound {
 		// A write deadline per write: a client that stopped reading must not wedge this
 		// goroutine indefinitely — the deadline turns it into a write error and teardown.
@@ -201,6 +202,23 @@ func (s *session) send(pdu *smpp.PDU) {
 	select {
 	case s.outbound <- b:
 	case <-s.writerClosed:
+	}
+}
+
+// recoverGoroutine is the last-resort panic boundary for this session's writer and
+// closer goroutines — the counterpart to engine.recoverSession, which covers only the
+// synchronous readLoop. A panic in either goroutine (a future codec/encode bug, say)
+// must never escape to crash the process, its accept loop or the sibling virtual SMSCs
+// (S6/T1). It logs loudly with the offending goroutine, panic value and stack, then
+// lets the goroutine unwind so its deferred channel close still runs and teardown does
+// not wedge on it. Deliberately per session — never a global recover that would mask a
+// determinism bug across instances (CLAUDE.md "recover de dernier ressort par SMSC virtuel").
+func (s *session) recoverGoroutine(where string) {
+	if r := recover(); r != nil {
+		s.logger.Error("session goroutine panic recovered",
+			slog.String("goroutine", where),
+			slog.Any("panic", r),
+			slog.String("stack", string(debug.Stack())))
 	}
 }
 
@@ -369,8 +387,6 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 	s.canReceive = pdu.CommandID != smpp.BindTransmitter
 	s.scenarioState = s.smsc.scenario.NewBindState(s.smsc.cfg.Seed, s.smsc.cfg.Name, s.id)
 	s.currentEngine = s.smsc.scenario // starts on the initial profile; transitions swap it
-	s.currentProfile = string(s.smsc.cfg.Scenario.Profile)
-	s.bound.Store(true)
 	s.smsc.binds.add(bindInfo{
 		id:          s.id,
 		systemID:    bind.SystemID,
@@ -378,6 +394,11 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 		connectedAt: time.Now(),
 	})
 	s.smsc.metrics.IncBind(s.smsc.cfg.Name, s.bindType)
+	// Set bound LAST, right after IncBind: teardown gates DecBind on this flag, so making
+	// it the final step keeps the active-binds gauge balanced — bound==true now strictly
+	// implies IncBind ran (an atomic store cannot panic in the gap), so a panic anywhere
+	// earlier tears down without a spurious DecBind driving the gauge negative.
+	s.bound.Store(true)
 
 	// Anchor the quiescence window to the bind: S5 events are enqueued here, before any
 	// submit_sm, so without this lastSubmit would stay zero and armReadDeadline would fire
@@ -430,13 +451,19 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	// tick and the recorder (the assertion surface) sees every received submit_sm.
 	s.perBindClock = tick
 	s.smsc.logicalClock.Add(1)
-	// Instrument the committed submit: one received count, its served outcome, and the
-	// served latency in seconds. The scenario label mirrors the SMSC's active-profile
-	// observable (a transition may have just swapped it), consistent with active_scenario.
+	// Instrument the committed submit: one received count and its served outcome,
+	// unconditional (every committed submit is received and resolves to an outcome). The
+	// served latency is observed only where a submit_sm_resp actually goes out (see the
+	// switch below): timeouts and before-response disconnects never answer, so sampling
+	// them would inflate the served-latency percentiles with waits the client never saw.
+	// The scenario label is THIS bind's active profile (currentEngine.Profile()), which a
+	// transition may have just swapped — never the SMSC-global activeProfile.
 	name := s.smsc.cfg.Name
 	s.smsc.metrics.IncSubmit(name)
 	s.smsc.metrics.IncOutcome(name, outcomeLabel(decision.Outcome))
-	s.smsc.metrics.ObserveServedLatency(name, s.currentProfile, float64(decision.LatencyMS)/1000)
+	observeServed := func() {
+		s.smsc.metrics.ObserveServedLatency(name, string(s.currentEngine.Profile()), float64(decision.LatencyMS)/1000)
+	}
 	// Anchor the quiescence window: the flush fires this long after the last submit_sm.
 	// Off the deterministic content path (it decides only WHEN to drain, never what or in
 	// what order), so reading the wall clock here is legitimate even in seeded mode.
@@ -472,6 +499,7 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 			SequenceNumber: pdu.SequenceNumber,
 			Body:           &smpp.SubmitResp{MessageID: messageID},
 		})
+		observeServed()
 		// A successful submit schedules its DLR (when the profile configures one), anchored
 		// to the origin tick + the configured delay on this bind.
 		if decision.DLR != nil {
@@ -480,6 +508,7 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	case scenario.OutcomeError:
 		// A non-ROK submit_sm_resp carries no message_id body.
 		s.send(&smpp.PDU{CommandID: smpp.SubmitSMResp, CommandStatus: decision.Status, SequenceNumber: pdu.SequenceNumber})
+		observeServed()
 	case scenario.OutcomeTimeout:
 		// Withhold the response entirely; readLoop keeps reading so the client can send more
 		// (its own response_timeout fires eventually). Fall through to the drain: this submit
@@ -494,6 +523,7 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 				SequenceNumber: pdu.SequenceNumber,
 				Body:           &smpp.SubmitResp{MessageID: messageID},
 			})
+			observeServed() // a before-response disconnect never answers, so it stays unsampled
 		}
 		s.state = stateClosed // teardown closes the TCP connection
 		return

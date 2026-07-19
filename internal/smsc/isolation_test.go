@@ -139,3 +139,27 @@ func TestIsolation_SessionPanicDoesNotKillSiblings(t *testing.T) {
 		t.Fatalf("healthy submit = %s/%d after sibling panic, want submit_sm_resp/ROK", resp.CommandID, resp.CommandStatus)
 	}
 }
+
+// TestRecoverGoroutine_CatchesPanicAndRunsLaterDefers is the unit guard for the
+// writer/closer panic boundary (S6/T1): recoverGoroutine must swallow a panic AND let a
+// defer registered before it still run — exactly what writeLoop and the closer rely on
+// to close their done channels, so a panic there cannot wedge teardown or escape to
+// crash the sibling virtual SMSCs.
+func TestRecoverGoroutine_CatchesPanicAndRunsLaterDefers(t *testing.T) {
+	var logs lockedBuffer
+	s := &session{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+
+	ran := false
+	func() {
+		defer func() { ran = true }()         // registered first => runs last, must still run
+		defer s.recoverGoroutine("writeLoop") // registered second => runs first, recovers
+		panic("boom")                         // reaching the end of func() proves it was recovered
+	}()
+
+	if !ran {
+		t.Fatal("defer registered before recoverGoroutine did not run; teardown would wedge")
+	}
+	if got := logs.String(); !strings.Contains(got, "session goroutine panic recovered") || !strings.Contains(got, "writeLoop") {
+		t.Errorf("recoverGoroutine did not log the recovered panic; got:\n%s", got)
+	}
+}

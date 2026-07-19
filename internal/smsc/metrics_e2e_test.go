@@ -124,6 +124,50 @@ func TestE2E_MetricsPerVirtualSMSC(t *testing.T) {
 	}
 }
 
+// TestE2E_ServedLatencyOnlySampledWhenResponded: the served-latency histogram counts a
+// submit only when a submit_sm_resp actually goes out. A healthy carrier (success)
+// contributes one sample; a dead-carrier in timeout_all mode receives the submit but
+// withholds the response, so it must contribute NO served-latency sample even though its
+// submit_received counter still ticks — otherwise timeouts would skew the percentiles.
+func TestE2E_ServedLatencyOnlySampledWhenResponded(t *testing.T) {
+	t.Parallel()
+
+	h := startWithMetrics(t,
+		healthyConfig("carrier-ok"),
+		deadCarrierConfig("carrier-timeout", config.DeadCarrierTimeoutAll),
+	)
+
+	ok := smpptest.Dial(t, h.addrs["carrier-ok"])
+	ok.BindTransceiver(testSystemID, testPassword)
+	if got := ok.SubmitStatus("33600000000", "33611111111", "hi"); got != smpp.StatusROK {
+		t.Fatalf("healthy submit status = %d, want ESME_ROK", got)
+	}
+
+	dead := smpptest.Dial(t, h.addrs["carrier-timeout"])
+	dead.BindTransceiver(testSystemID, testPassword)
+	dead.SubmitAsync("33600000000", "33611111111", "swallowed")
+	dead.ExpectNoResponse(500 * time.Millisecond) // the response is withheld; the server has processed the submit
+
+	body := scrapeText(t, h.baseURL+"/metrics")
+
+	// The responded submit is sampled once.
+	wantSampled := `smsc_served_latency_seconds_count{scenario="healthy",virtual_smsc="carrier-ok"} 1`
+	if !strings.Contains(body, wantSampled) {
+		t.Errorf("/metrics missing %q (responded submit should be sampled)\n%s", wantSampled, body)
+	}
+	// The timed-out submit is received but never sampled: its received counter ticks...
+	wantReceived := `smsc_submit_sm_received_total{virtual_smsc="carrier-timeout"} 1`
+	if !strings.Contains(body, wantReceived) {
+		t.Errorf("/metrics missing %q (timed-out submit is still received)\n%s", wantReceived, body)
+	}
+	// ...while no served-latency series exists for it at all.
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "smsc_served_latency_seconds") && strings.Contains(line, `virtual_smsc="carrier-timeout"`) {
+			t.Errorf("served-latency sampled for a withheld response: %q", line)
+		}
+	}
+}
+
 // TestE2E_MetricsLabelCardinalityBounded is the S6/T3 guard invariant: no metric may
 // carry a label outside the bounded set {virtual_smsc, bind_type, outcome, scenario},
 // and no label value may leak a MSISDN, message content or message_id. It fails if a

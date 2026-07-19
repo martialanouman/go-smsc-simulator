@@ -144,6 +144,13 @@ func New(cfg config.ScenarioConfig, limitPerSec *int) *Engine {
 	return e
 }
 
+// Profile returns the catalogue profile this engine evaluates. A session reads it to
+// label metrics by the profile currently active on its bind (a transition swaps the
+// engine), so the label always follows this bind rather than a SMSC-global observable.
+func (e *Engine) Profile() config.Profile {
+	return e.profile
+}
+
 // NewBindState creates the per-bind state for a newly bound session. With a seed the
 // PRNG is derived deterministically from (seed, smscID, bindOrdinal); without one it
 // is a chaos-mode source. A throughput gate is attached only when a cap applies.
