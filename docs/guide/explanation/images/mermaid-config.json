@@ -1,0 +1,17 @@
+{
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Helvetica, Arial, sans-serif",
+    "fontSize": "15px",
+    "clusterBkg": "#f8fafc",
+    "clusterBorder": "#cbd5e1",
+    "lineColor": "#475569"
+  },
+  "flowchart": {
+    "curve": "basis",
+    "htmlLabels": true,
+    "padding": 12,
+    "nodeSpacing": 45,
+    "rankSpacing": 55
+  }
+}

@@ -19,36 +19,12 @@ Du point de vue de la passerelle sous test, chaque SMSC virtuel est **indistingu
 d'un vrai connecteur opérateur** : elle s'y binde comme à un vrai SMSC, sans aucun
 changement de code.
 
-```
-                     +----------------------------+
-                     |   smsc-simulator.yml        |  <- entrée de config UNIQUE, lue au démarrage
-                     +-------------+--------------+
-                                   | (parsée une fois ; aucune reconfiguration runtime)
-                                   v
-+---------------------------------------------------------------------+
-|                smsc-simulator (binaire Go unique)                   |
-|  +----------------------+     +----------------------+              |
-|  | Virtual SMSC #1       |     | Virtual SMSC #2..N    |  <- 1 listener|
-|  | (SMPP Server Engine)  |     | (SMPP Server Engine)  |     SMPP/port |
-|  |  - bind handling       |     |  - bind handling       |            |
-|  |  - Scenario Engine      |     |  - Scenario Engine      |          |
-|  |  - Fault Injector        |     |  - Fault Injector        |        |
-|  |  - Schedule Runner (tick) |     |  - Schedule Runner (tick) |      |
-|  |  - per_bind_clock          |     |  - per_bind_clock          |    |
-|  |  - PDU Recorder (ring)      |     |  - PDU Recorder (ring)      |  |
-|  +-----------+-----------+     +-----------+-----------+            |
-|              |                             |                        |
-|  +-----------v-----------------------------v-----------+           |
-|  |     Observability API (HTTP, READ-ONLY, 1 port)      |           |
-|  |  GET binds / received-pdus / logical-clock           |           |
-|  |  GET health / metrics       (NI config, NI mutation) |           |
-|  +-------------------------------------------------------+          |
-+---------------------------------------------------------------------+
-                 ^ binds SMPP (un par port de SMSC virtuel)
-    +------------+--------------+
-    |   Passerelle sous test     |  (traite chaque SMSC virtuel comme un vrai connecteur)
-    +-----------------------------+
-```
+![Vue d'ensemble : un binaire unique héberge N SMSC virtuels (chacun avec SMPP Server
+Engine, Scenario Engine, Fault Injector, Schedule Runner, per_bind_clock, PDU Recorder)
+plus une API d'observabilité HTTP en lecture seule ; la passerelle sous test s'y binde en
+SMPP, un bind par port.](images/architecture-overview.svg)
+
+<sub>Source éditable : [`images/architecture-overview.mmd`](images/architecture-overview.mmd) (Mermaid).</sub>
 
 ## Les composants (`internal/`)
 
@@ -87,26 +63,13 @@ Cette discipline — *un seul propriétaire de l'état par session* — est ce q
 
 Voici le chemin complet d'une soumission, du décodage à l'enregistrement :
 
-```
-décodage PDU
-   │
-   ▼
-Scenario Engine
-   │  (profil actif ; incrémente per_bind_clock + logical_clock)
-   ▼
-sélection de résultat pondérée  ← graînée par (seed, per_bind_clock)
-   │
-   ▼
-Fault Injector
-   │  (latence / erreur / timeout / disconnect)
-   ▼
-submit_sm_resp
-   │
-   ├──► DLR planifié dans pending_logical_schedule (drainé par le Schedule Runner)
-   │
-   ▼
-PDU enregistrée dans le ring buffer (inspectable en lecture seule)
-```
+![Flux d'un submit_sm : décodage PDU → Scenario Engine (incrémente per_bind_clock et
+logical_clock) → sélection de résultat pondérée graînée par (seed, per_bind_clock) →
+Fault Injector → submit_sm_resp, qui déclenche à la fois un DLR planifié dans
+pending_logical_schedule et l'enregistrement de la PDU dans le ring
+buffer.](images/submit-sm-flow.svg)
+
+<sub>Source éditable : [`images/submit-sm-flow.mmd`](images/submit-sm-flow.mmd) (Mermaid).</sub>
 
 Aucune base externe n'intervient : **tout est en mémoire, borné, éphémère**. L'isolation
 entre tests s'obtient en relançant le processus (démarrage < 2 s).
