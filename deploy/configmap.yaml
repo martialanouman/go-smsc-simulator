@@ -25,3 +25,7 @@ data:
           latency:
             distribution: fixed
             params: { ms: 20 }
+          dlr:
+            delay: { distribution: fixed, ticks: 5 }          # 5 ticks après le submit_sm d'origine
+            outcome_weights: { delivered: 90, failed: 8, expired: 2 }
+            clock: logical
