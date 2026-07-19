@@ -9,6 +9,9 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Server timeouts. The observability surface answers cheap, local questions, so
@@ -45,8 +48,10 @@ type Server struct {
 // are registered only when it is non-nil, so a black-box or pre-engine boot still
 // serves /health alone. insp is never allowed to mutate state — see Inspector.
 //
-// STUB S6: /metrics lands at S6. See plan §10.
-func NewServer(port int, logger *slog.Logger, insp Inspector) (*Server, error) {
+// reg is the Prometheus registry the engine's collectors are registered on; when
+// non-nil, GET /metrics exposes it. It is a Gatherer (read-only) here — the surface
+// scrapes metrics, it never mutates them.
+func NewServer(port int, logger *slog.Logger, insp Inspector, reg prometheus.Gatherer) (*Server, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, fmt.Errorf("listen on observability port %d: %w", port, err)
@@ -66,6 +71,12 @@ func NewServer(port int, logger *slog.Logger, insp Inspector) (*Server, error) {
 		mux.HandleFunc("GET /v1/virtual-smscs/{id}/received-pdus", s.handleReceivedPDUs)
 		mux.HandleFunc("GET /v1/virtual-smscs/{id}/binds", s.handleBinds)
 		mux.HandleFunc("GET /v1/virtual-smscs/{id}/logical-clock", s.handleLogicalClock)
+	}
+
+	// /metrics is a bare path (no /v1) by Prometheus convention. It keeps the "GET "
+	// prefix so a mutating verb still 405s — scraping metrics never changes state.
+	if reg != nil {
+		mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	}
 
 	s.http = &http.Server{

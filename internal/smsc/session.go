@@ -155,6 +155,11 @@ func (s *session) run() {
 	<-s.writerClosed
 	_ = s.conn.Close()
 	s.smsc.binds.remove(s.id)
+	// Balance the IncBind on a successful bind. A rejected bind never set bound, so the
+	// active-binds gauge only ever counts binds that actually registered.
+	if s.bound.Load() {
+		s.smsc.metrics.DecBind(s.smsc.cfg.Name, s.bindType)
+	}
 }
 
 // writeLoop is the sole writer of the connection. It drains outbound until the
@@ -358,6 +363,7 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 		bindType:    s.bindType,
 		connectedAt: time.Now(),
 	})
+	s.smsc.metrics.IncBind(s.smsc.cfg.Name, s.bindType)
 
 	// Anchor the quiescence window to the bind: S5 events are enqueued here, before any
 	// submit_sm, so without this lastSubmit would stay zero and armReadDeadline would fire
@@ -410,6 +416,13 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	// tick and the recorder (the assertion surface) sees every received submit_sm.
 	s.perBindClock = tick
 	s.smsc.logicalClock.Add(1)
+	// Instrument the committed submit: one received count, its served outcome, and the
+	// served latency in seconds. The scenario label mirrors the SMSC's active-profile
+	// observable (a transition may have just swapped it), consistent with active_scenario.
+	name := s.smsc.cfg.Name
+	s.smsc.metrics.IncSubmit(name)
+	s.smsc.metrics.IncOutcome(name, outcomeLabel(decision.Outcome))
+	s.smsc.metrics.ObserveServedLatency(name, s.smsc.activeProfile.Load().(string), float64(decision.LatencyMS)/1000)
 	// Anchor the quiescence window: the flush fires this long after the last submit_sm.
 	// Off the deterministic content path (it decides only WHEN to drain, never what or in
 	// what order), so reading the wall clock here is legitimate even in seeded mode.

@@ -49,7 +49,10 @@ type Engine struct {
 // endpoints are already live (mirrors observability.NewServer, plan §6). On any
 // bind failure it closes the listeners already opened and returns the error, so no
 // half-open engine leaks.
-func New(cfgs []config.VirtualSMSCConfig, logger *slog.Logger) (*Engine, error) {
+func New(cfgs []config.VirtualSMSCConfig, m metricsSink, logger *slog.Logger) (*Engine, error) {
+	if m == nil {
+		m = noopMetrics{} // black-box boots and tests may pass no sink; never nil-check the hot path
+	}
 	e := &Engine{
 		byName: make(map[string]*virtualSMSC, len(cfgs)),
 		logger: logger,
@@ -79,7 +82,7 @@ func New(cfgs []config.VirtualSMSCConfig, logger *slog.Logger) (*Engine, error) 
 				MinVersion:   tls.VersionTLS12,
 			})
 		}
-		v := newVirtualSMSC(cfg, ln, logger)
+		v := newVirtualSMSC(cfg, ln, m, logger)
 		e.smscs = append(e.smscs, v)
 		e.byName[cfg.Name] = v
 	}

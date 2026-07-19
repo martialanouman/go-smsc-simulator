@@ -26,6 +26,7 @@ type virtualSMSC struct {
 	// (spec §6.1). Built once at boot, never mutated, so concurrent reads need no lock.
 	engines map[config.Profile]*scenario.Engine
 	binds   *bindRegistry
+	metrics metricsSink
 	logger  *slog.Logger
 
 	// activeProfile is the read-only observable of the currently active profile. It is a
@@ -46,7 +47,7 @@ type virtualSMSC struct {
 	dlrDropped atomic.Uint64
 }
 
-func newVirtualSMSC(cfg config.VirtualSMSCConfig, ln net.Listener, logger *slog.Logger) *virtualSMSC {
+func newVirtualSMSC(cfg config.VirtualSMSCConfig, ln net.Listener, m metricsSink, logger *slog.Logger) *virtualSMSC {
 	initial := scenario.New(cfg.Scenario, cfg.ThroughputLimitPerSec)
 	v := &virtualSMSC{
 		cfg:      cfg,
@@ -55,9 +56,13 @@ func newVirtualSMSC(cfg config.VirtualSMSCConfig, ln net.Listener, logger *slog.
 		scenario: initial,
 		engines:  buildEngines(cfg, initial),
 		binds:    newBindRegistry(),
+		metrics:  m,
 		logger:   logger.With(slog.String("virtual_smsc", cfg.Name)),
 	}
 	v.activeProfile.Store(string(cfg.Scenario.Profile))
+	// Seed the active-scenario gauge at boot so a virtual SMSC that never transitions
+	// still reports its profile (1 on the initial, 0 on any transition target).
+	v.metrics.SetActiveScenario(cfg.Name, string(cfg.Scenario.Profile))
 	return v
 }
 
@@ -81,6 +86,7 @@ func buildEngines(cfg config.VirtualSMSCConfig, initial *scenario.Engine) map[co
 // observable. Called from a session's read goroutine when a transition fires.
 func (v *virtualSMSC) setActiveProfile(p config.Profile) {
 	v.activeProfile.Store(string(p))
+	v.metrics.SetActiveScenario(v.cfg.Name, string(p))
 }
 
 // view assembles the read-only summary of this virtual SMSC.

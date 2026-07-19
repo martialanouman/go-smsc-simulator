@@ -74,7 +74,7 @@ func TestIsolation_SessionPanicDoesNotKillSiblings(t *testing.T) {
 	}
 	t.Cleanup(func() { testPanicHook = nil })
 
-	engine, err := New([]config.VirtualSMSCConfig{isolationHealthyCfg("boom"), isolationHealthyCfg("healthy")}, logger)
+	engine, err := New([]config.VirtualSMSCConfig{isolationHealthyCfg("boom"), isolationHealthyCfg("healthy")}, nil, logger)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
