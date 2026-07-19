@@ -1,0 +1,23 @@
+# Example compose wiring the simulator as an SMSC connector for the gateway under test.
+# `docker compose up` brings up a turnkey plaintext carrier on 2775 (SMPP) + 9000
+# (observability). The gateway (a separate project) points an smsc_connectors[] entry at
+# smsc-simulator:2775 and can scrape carrier metrics at smsc-simulator:9000/metrics.
+#
+# Plaintext on purpose: the auto-generated TLS cert is loopback-only (its SANs are
+# localhost / 127.0.0.1 / ::1), so a peer reaching this service by name over TLS would
+# fail hostname verification. To serve TLS by service name, mount a cert/key whose SANs
+# cover "smsc-simulator" and enable tls in the mounted .yml (see examples/tls-carrier.yml).
+
+services:
+  smsc-simulator:
+    build:
+      context: .
+      args:
+        VERSION: compose
+    image: smsc-simulator:dev
+    command: ["--config", "/etc/smsc/config.yml"]
+    volumes:
+      - ./examples/healthy.yml:/etc/smsc/config.yml:ro
+    ports:
+      - "2775:2775"
+      - "9000:9000"

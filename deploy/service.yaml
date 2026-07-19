@@ -1,0 +1,19 @@
+# ClusterIP so the in-cluster gateway-under-test reaches the simulator by name:
+# smsc-simulator:2775 as an smsc_connectors[] endpoint, and :9000 to scrape /metrics.
+apiVersion: v1
+kind: Service
+metadata:
+  name: smsc-simulator
+  labels:
+    app: smsc-simulator
+spec:
+  type: ClusterIP
+  selector:
+    app: smsc-simulator
+  ports:
+    - name: smpp
+      port: 2775
+      targetPort: smpp
+    - name: observability
+      port: 9000
+      targetPort: observability

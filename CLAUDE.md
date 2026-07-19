@@ -21,10 +21,14 @@ Un **simulateur SMSC** en Go : un **serveur SMPP** qui se fait passer pour un SM
 ```bash
 make build                 # compile cmd/smsc-simulator
 make test                  # go test -race ./...   (OBLIGATOIRE avant toute PR)
+make fuzz                  # fuzz borné du décodeur PDU (FUZZTIME=30s par cible) — le corpus de seed tourne déjà dans `make test`
 make lint                  # golangci-lint (config .golangci.yml)
 make vuln                  # govulncheck
 make run CONFIG=examples/healthy.yml   # lance le simulateur avec une fixture
-make docker                # build l'image de distribution
+make docker                # build l'image de distribution (scratch, statique ; --build-arg VERSION)
+make loadtest              # bench de débit + déterminisme sous charge (build-tag `loadtest`, hors CI unitaire)
+docker compose up          # carrier plaintext clé-en-main (2775 SMPP + 9000 observabilité) ; cf. docker-compose.yml
+kubectl apply -f deploy/   # ConfigMap + Deployment + Service (SMSC long-running en cluster)
 ```
 
 ## Architecture (carte mentale)

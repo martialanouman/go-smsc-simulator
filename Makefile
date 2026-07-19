@@ -68,11 +68,7 @@ snapshot:
 ## docker: build the distribution image.
 ## The Dockerfile is an S7 deliverable (plan §11); this target fails until S7 lands it.
 docker:
-	@test -f Dockerfile || { \
-		echo "make docker: no Dockerfile yet — it is an S7 deliverable (plan §11)"; \
-		exit 1; \
-	}
-	docker build -t $(DOCKER_IMAGE) .
+	docker build --build-arg VERSION=$(VERSION) -t $(DOCKER_IMAGE) .
 
 clean:
 	rm -rf $(BIN_DIR)
