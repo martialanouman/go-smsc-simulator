@@ -199,6 +199,32 @@ func (s *session) send(pdu *smpp.PDU) {
 		s.logger.Error("encode response", slog.String("command", pdu.CommandID.String()), slog.Any("error", err))
 		return
 	}
+	s.sendBytes(b)
+}
+
+// sendResp queues a submit_sm_resp, honouring an optional edge-case plan: with a plan
+// the response is deliberately malformed (protocol_edge_cases), otherwise it is encoded
+// strictly. This is the one seam where injection reaches the wire.
+func (s *session) sendResp(pdu *smpp.PDU, edge *scenario.EdgeCasePlan) {
+	if edge == nil {
+		s.send(pdu)
+		return
+	}
+	b, err := smpp.EncodeEdgeCase(pdu, edge.Kind)
+	if err != nil {
+		s.logger.Error("encode edge-case response",
+			slog.String("command", pdu.CommandID.String()),
+			slog.String("edge_case", edge.Kind.String()),
+			slog.Any("error", err))
+		return
+	}
+	s.sendBytes(b)
+}
+
+// sendBytes queues already-encoded bytes for the writer. It never blocks the read
+// goroutine past the writer's life: if the writer has gone, the bytes are dropped
+// rather than deadlocking on a full channel.
+func (s *session) sendBytes(b []byte) {
 	select {
 	case s.outbound <- b:
 	case <-s.writerClosed:
@@ -493,12 +519,13 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 
 	switch decision.Outcome {
 	case scenario.OutcomeSuccess:
-		s.send(&smpp.PDU{
+		// decision.EdgeCase (protocol_edge_cases) malforms this resp when set; nil = strict.
+		s.sendResp(&smpp.PDU{
 			CommandID:      smpp.SubmitSMResp,
 			CommandStatus:  smpp.StatusROK,
 			SequenceNumber: pdu.SequenceNumber,
 			Body:           &smpp.SubmitResp{MessageID: messageID},
-		})
+		}, decision.EdgeCase)
 		observeServed()
 		// A successful submit schedules its DLR (when the profile configures one), anchored
 		// to the origin tick + the configured delay on this bind.
@@ -507,7 +534,7 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		}
 	case scenario.OutcomeError:
 		// A non-ROK submit_sm_resp carries no message_id body.
-		s.send(&smpp.PDU{CommandID: smpp.SubmitSMResp, CommandStatus: decision.Status, SequenceNumber: pdu.SequenceNumber})
+		s.sendResp(&smpp.PDU{CommandID: smpp.SubmitSMResp, CommandStatus: decision.Status, SequenceNumber: pdu.SequenceNumber}, decision.EdgeCase)
 		observeServed()
 	case scenario.OutcomeTimeout:
 		// Withhold the response entirely; readLoop keeps reading so the client can send more

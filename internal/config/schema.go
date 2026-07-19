@@ -82,11 +82,25 @@ type TLSConfig struct {
 // latency, and optional DLR generation. The profile must belong to the frozen
 // catalogue (spec §6.1); params may only set the knobs that profile exposes.
 type ScenarioConfig struct {
-	Profile                  Profile        `yaml:"profile"`
-	Params                   ScenarioParams `yaml:"params"`
-	Latency                  LatencyConfig  `yaml:"latency"`
-	DLR                      *DLRConfig     `yaml:"dlr"` // nil = no DLR generation
-	ProtocolEdgeCasesEnabled bool           `yaml:"protocol_edge_cases_enabled"`
+	Profile                  Profile                  `yaml:"profile"`
+	Params                   ScenarioParams           `yaml:"params"`
+	Latency                  LatencyConfig            `yaml:"latency"`
+	DLR                      *DLRConfig               `yaml:"dlr"`                         // nil = no DLR generation
+	ProtocolEdgeCasesEnabled bool                     `yaml:"protocol_edge_cases_enabled"` // master switch: off => strict encoding
+	ProtocolEdgeCases        *ProtocolEdgeCasesConfig `yaml:"protocol_edge_cases"`         // nil => defaults (every tick, all kinds)
+}
+
+// ProtocolEdgeCasesConfig tunes opt-in malformed-response injection (plan §11 / T1). It
+// is only meaningful when ProtocolEdgeCasesEnabled is true; setting it while the master
+// switch is off is a dead config, rejected at load. Both knobs are optional: an absent
+// block (or absent field) means inject on every tick, rotating through all three kinds.
+//
+// Injection is a property of the scenario, so — like the DLR, latency and params knobs —
+// it follows the ACTIVE profile: a scheduled_transition switches to a bare reference
+// profile with injection off, and a transition back to the initial profile restores it.
+type ProtocolEdgeCasesConfig struct {
+	InjectEveryTicks *uint64        `yaml:"inject_every_ticks"` // nil => 1; a malformed resp every N ticks
+	Kinds            []EdgeCaseKind `yaml:"kinds"`              // empty => all three, rotated deterministically
 }
 
 // ScenarioParams is the union of every knob any profile exposes. KnownFields

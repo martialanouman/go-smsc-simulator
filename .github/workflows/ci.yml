@@ -6,6 +6,8 @@ on:
   pull_request:
     # edited/synchronize so the PR-title lint re-runs when the title is fixed.
     types: [opened, edited, synchronize, reopened]
+  schedule:
+    - cron: "0 3 * * *" # nightly active fuzzing of main (the fuzz job below)
   workflow_dispatch: # allow a manual re-run from the Actions tab
 
 permissions:
@@ -60,6 +62,24 @@ jobs:
           go-version-file: go.mod
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0 # pinned; keep in sync with the Makefile
       - run: make vuln
+
+  # fuzz drives bounded ACTIVE fuzzing of the PDU decoder — the one surface fed untrusted
+  # bytes off a socket. Active fuzzing explores fresh random inputs each run, so a found
+  # crasher would be written only to the ephemeral runner's testdata/fuzz and could redden
+  # an unrelated PR non-reproducibly. So it runs nightly (and on demand), NOT on every PR
+  # and NOT as a release gate: PRs still exercise the committed seed corpus through the
+  # `test` job (`go test` runs each seed once). The Makefile target is the source of truth,
+  # so local `make fuzz` runs the identical command.
+  fuzz:
+    name: fuzz
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make fuzz
 
   build:
     name: build

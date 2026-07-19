@@ -1,0 +1,27 @@
+# The simulator's only input: its YAML config, mounted as a volume. Editing this and
+# rolling the Deployment is the sole way to reconfigure — there is no runtime config API.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smsc-simulator-config
+  labels:
+    app: smsc-simulator
+data:
+  config.yml: |
+    observability:
+      http_port: 9000
+    virtual_smscs:
+      - name: carrier-healthy
+        port: 2775
+        bind_credentials:
+          system_id: smppclient1
+          password: secret
+        addr_ton: 1
+        addr_npi: 1
+        seed: 42
+        pdu_buffer_size: 10000
+        scenario:
+          profile: healthy
+          latency:
+            distribution: fixed
+            params: { ms: 20 }

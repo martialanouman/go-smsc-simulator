@@ -1,0 +1,56 @@
+# A long-running SMSC peer, modelled as a Deployment (not a Job — the simulator serves
+# until stopped, it does not run to completion). One replica: determinism is scoped per
+# bind, so scaling out would give each pod its own independent seeded state, not a shared
+# one. The image is static/scratch, so the container runs as non-root with no shell.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smsc-simulator
+  labels:
+    app: smsc-simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: smsc-simulator
+  template:
+    metadata:
+      labels:
+        app: smsc-simulator
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+      containers:
+        - name: smsc-simulator
+          image: smsc-simulator:dev
+          args: ["--config", "/etc/smsc/config.yml"]
+          ports:
+            - name: smpp
+              containerPort: 2775
+            - name: observability
+              containerPort: 9000
+          resources:
+            # < 50 MiB per virtual SMSC at rest (NFR, plan §11); one healthy vSMSC here.
+            requests:
+              memory: 64Mi
+              cpu: 100m
+            limits:
+              memory: 128Mi
+              cpu: 500m
+          readinessProbe:
+            # SMPP port accepting connections == ready. The kubelet dials it, so this
+            # works even though the scratch image has no shell for an exec probe.
+            tcpSocket:
+              port: smpp
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/smsc
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: smsc-simulator-config

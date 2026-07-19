@@ -107,7 +107,10 @@ virtual_smscs:
         delay: { distribution: fixed, ticks: 5 }   # anchored to the origin submit_sm's per-bind tick
         outcome_weights: { delivered: 90, failed: 8, expired: 2 }
         clock: logical                 # logical | wallclock (wallclock only valid when seed is absent)
-      protocol_edge_cases_enabled: false           # opt-in malformed-PDU injection
+      protocol_edge_cases_enabled: false           # opt-in malformed-PDU injection (off => strict encoding)
+      protocol_edge_cases:                          # optional tuning; only valid when *_enabled is true
+        inject_every_ticks: 5                       # malform one submit_sm_resp every N ticks (default 1)
+        kinds: [bad_length, unknown_command_id, bad_sequence]  # rotated in order; empty/absent => all three
 
     # Scheduled MO injection. Deterministic by tick.
     mo_injection:

@@ -30,6 +30,7 @@ var (
 	ErrTruncated        = errors.New("pdu body truncated")
 	ErrUnterminated     = errors.New("c-octet string not terminated")
 	ErrUnknownCommand   = errors.New("unknown command_id")
+	ErrBadShortMessage  = errors.New("sm_length outside valid range")
 )
 
 // ReadPDU reads exactly one framed PDU off r and returns its raw bytes (header
@@ -202,6 +203,13 @@ func decodeMessage(r *reader) (Body, error) {
 	smLength, err := r.byte()
 	if err != nil {
 		return nil, err
+	}
+	// sm_length is 0..254 in SMPP v3.4 (255 is reserved); Encode clamps at the same
+	// bound (maxShortMessageLen). Reject an out-of-range length here so decode and
+	// encode stay symmetric — otherwise a 255-octet short_message would decode but
+	// re-encode lossily, the asymmetry the decoder fuzz (plan §11 / T2) surfaced.
+	if int(smLength) > maxShortMessageLen {
+		return nil, fmt.Errorf("%w: %d", ErrBadShortMessage, smLength)
 	}
 	if m.ShortMessage, err = r.octets(int(smLength)); err != nil {
 		return nil, err

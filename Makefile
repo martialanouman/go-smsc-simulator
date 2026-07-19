@@ -16,7 +16,10 @@ DOCKER_IMAGE          := smsc-simulator:dev
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all check tools build test lint vuln run snapshot docker clean
+.PHONY: all check tools build test fuzz loadtest lint vuln run snapshot docker clean
+
+# FUZZTIME bounds each active fuzz target so CI stays quick; override for a deep local run.
+FUZZTIME ?= 30s
 
 all: lint test build
 
@@ -36,6 +39,18 @@ build:
 ## test: the race detector is mandatory, never optional (CLAUDE.md)
 test:
 	go test -race ./...
+
+## fuzz: bounded active fuzzing of the PDU decoder (plan §11 / T2). The seed corpus
+## already runs under `make test`; this drives new inputs. -fuzz takes one target at a
+## time, so the two run in sequence, each bounded by FUZZTIME.
+fuzz:
+	go test -run '^$$' -fuzz '^FuzzReadPDU$$' -fuzztime=$(FUZZTIME) ./internal/smpp
+	go test -run '^$$' -fuzz '^FuzzDecode$$'  -fuzztime=$(FUZZTIME) ./internal/smpp
+
+## loadtest: throughput + determinism-under-load NFR harness (plan §11 / T4). Behind the
+## `loadtest` build tag so it stays out of `make test` / CI; heavy and timing-sensitive.
+loadtest:
+	go test -race=false -tags loadtest -run '^TestLoad' -bench '^BenchmarkThroughput$$' -benchmem ./internal/smsc
 
 ## lint: must report zero warnings
 lint:
@@ -58,11 +73,7 @@ snapshot:
 ## docker: build the distribution image.
 ## The Dockerfile is an S7 deliverable (plan §11); this target fails until S7 lands it.
 docker:
-	@test -f Dockerfile || { \
-		echo "make docker: no Dockerfile yet — it is an S7 deliverable (plan §11)"; \
-		exit 1; \
-	}
-	docker build -t $(DOCKER_IMAGE) .
+	docker build --build-arg VERSION=$(VERSION) -t $(DOCKER_IMAGE) .
 
 clean:
 	rm -rf $(BIN_DIR)

@@ -45,7 +45,16 @@ type Decision struct {
 	Status         smpp.CommandStatus
 	LatencyMS      uint64
 	DisconnectWhen config.DisconnectWhen
-	DLR            *DLRPlan // non-nil only on a successful submit under a DLR-enabled profile
+	DLR            *DLRPlan      // non-nil only on a successful submit under a DLR-enabled profile
+	EdgeCase       *EdgeCasePlan // non-nil when the response should be malformed (protocol_edge_cases)
+}
+
+// EdgeCasePlan is the malformation to stamp on this submit's response when
+// protocol_edge_cases is enabled: the session emits the submit_sm_resp via
+// smpp.EncodeEdgeCase(kind) instead of the strict encoder. Injection is a pure tick
+// function, so it never draws from the bind PRNG (invariant a).
+type EdgeCasePlan struct {
+	Kind smpp.EdgeCaseKind
 }
 
 // DLROutcome is the resolved state of a scheduled delivery receipt.
@@ -112,6 +121,13 @@ type Engine struct {
 	dlrEnabled    bool
 	dlrMix        []weightedDLR // pre-flattened outcome_weights; deterministic weighted pick
 	dlrDelayTicks uint64        // fixed tick offset from the origin submit
+
+	// Protocol edge-case injection (protocol_edge_cases), off unless the master switch is
+	// set. Cadence and kind rotation are pure tick functions — no PRNG draw — so enabling
+	// them never perturbs the seeded decision stream (invariant a).
+	edgeEnabled    bool
+	edgeEveryTicks uint64              // inject on ticks where t % edgeEveryTicks == 0
+	edgeKinds      []smpp.EdgeCaseKind // rotated in order across injecting ticks
 }
 
 // BindState is the per-bind mutable state: the seeded PRNG and, when the profile or a
@@ -141,7 +157,44 @@ func New(cfg config.ScenarioConfig, limitPerSec *int) *Engine {
 			e.dlrDelayTicks = *cfg.DLR.Delay.Ticks
 		}
 	}
+	if cfg.ProtocolEdgeCasesEnabled {
+		e.edgeEnabled = true
+		e.edgeEveryTicks = 1
+		e.edgeKinds = allEdgeKinds()
+		if ec := cfg.ProtocolEdgeCases; ec != nil {
+			if ec.InjectEveryTicks != nil { // validation guarantees >= 1
+				e.edgeEveryTicks = *ec.InjectEveryTicks
+			}
+			if len(ec.Kinds) > 0 { // empty list keeps the all-kinds default
+				e.edgeKinds = mapEdgeKinds(ec.Kinds)
+			}
+		}
+	}
 	return e
+}
+
+// allEdgeKinds is the default rotation when protocol_edge_cases is enabled without an
+// explicit kinds list: every malformation, in a fixed order.
+func allEdgeKinds() []smpp.EdgeCaseKind {
+	return []smpp.EdgeCaseKind{smpp.EdgeBadLength, smpp.EdgeUnknownCmdID, smpp.EdgeBadSequence}
+}
+
+// mapEdgeKinds translates the config's string kinds onto the codec's kinds, preserving
+// order (the rotation is order-sensitive). Validation has already rejected any unknown
+// kind, so the default arm is unreachable in practice.
+func mapEdgeKinds(kinds []config.EdgeCaseKind) []smpp.EdgeCaseKind {
+	out := make([]smpp.EdgeCaseKind, 0, len(kinds))
+	for _, k := range kinds {
+		switch k {
+		case config.EdgeCaseBadLength:
+			out = append(out, smpp.EdgeBadLength)
+		case config.EdgeCaseUnknownCmdID:
+			out = append(out, smpp.EdgeUnknownCmdID)
+		case config.EdgeCaseBadSequence:
+			out = append(out, smpp.EdgeBadSequence)
+		}
+	}
+	return out
 }
 
 // Profile returns the catalogue profile this engine evaluates. A session reads it to
@@ -196,7 +249,29 @@ func (e *Engine) Evaluate(st *BindState, t uint64) Decision {
 	if e.dlrEnabled && d.Outcome == OutcomeSuccess {
 		d.DLR = &DLRPlan{Outcome: e.pickDLROutcome(st.rng), DelayTicks: e.dlrDelayTicks}
 	}
+	// Edge-case injection is decided last and consumes no PRNG draw, so it cannot shift
+	// the DLR/error stream above it — enabling it leaves a seeded replay byte-identical.
+	if k, ok := e.edgeCaseFor(t); ok {
+		d.EdgeCase = &EdgeCasePlan{Kind: k}
+	}
 	return d
+}
+
+// edgeCaseFor returns the malformation to stamp on tick t's response, if injection is
+// enabled and the cadence fires. It is a pure function of the tick: t % edgeEveryTicks
+// selects the injecting ticks, and (t/edgeEveryTicks - 1) rotates through edgeKinds in
+// order. No wall clock, no PRNG — reproducible per bind on replay (invariant a).
+//
+// The t==0, edgeEveryTicks!=0 and len!=0 conditions are guards, not dead checks: submit
+// ticks are perBindClock+1 so they start at 1, but a t of 0 would underflow the rotation
+// index, and a zero cadence or empty kinds list would divide by zero in the modulo. New()
+// upholds all three today; the guards keep this total for any future caller.
+func (e *Engine) edgeCaseFor(t uint64) (smpp.EdgeCaseKind, bool) {
+	if !e.edgeEnabled || t == 0 || len(e.edgeKinds) == 0 || e.edgeEveryTicks == 0 || t%e.edgeEveryTicks != 0 {
+		return 0, false
+	}
+	idx := (t/e.edgeEveryTicks - 1) % uint64(len(e.edgeKinds))
+	return e.edgeKinds[idx], true
 }
 
 // evaluate resolves the submit outcome and served latency for tick t, before any DLR is

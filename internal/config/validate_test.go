@@ -165,6 +165,20 @@ func TestValidate_SchemaCoherence(t *testing.T) {
       profile: flaky-carrier
       params: { error_mix: { NOT_A_CODE: 1 } }
       latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "edge cases block without master switch", wantErr: config.ErrParamNotExposed, errHint: "protocol_edge_cases", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+      protocol_edge_cases: { inject_every_ticks: 2 }`},
+		{name: "edge cases inject_every_ticks zero", wantErr: config.ErrParamOutOfBounds, errHint: "inject_every_ticks", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+      protocol_edge_cases_enabled: true
+      protocol_edge_cases: { inject_every_ticks: 0 }`},
+		{name: "edge cases invalid kind", wantErr: config.ErrInvalidEnum, errHint: "kinds", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+      protocol_edge_cases_enabled: true
+      protocol_edge_cases: { kinds: [ bogus_kind ] }`},
 		{name: "seeded throughput_limit on deterministic profile", wantErr: config.ErrSeededThroughputLimit, errHint: "throughput_limit_per_sec", tail: `    throughput_limit_per_sec: 100
     scenario:
       profile: flaky-carrier
