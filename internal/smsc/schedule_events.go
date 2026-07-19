@@ -149,6 +149,12 @@ func (s *session) dispatch(ev schedule.Event) {
 // the SMSC's read-only observable. buildEngines guarantees an engine exists for every
 // transition target, so the lookup cannot miss; a defensive miss is ignored rather than
 // panicking a live session.
+//
+// Known limitation: the throughput gate is bound once at bind time from the initial profile
+// and is NOT rebuilt here, so a transition cannot add or remove throttling. Validation
+// rejects seeded transitions INTO a throughput profile; the reverse (a throughput initial
+// transitioning out) keeps the original gate — acceptable since throughput binds are the
+// wall-clock, replay-exempt path (spec §6.2/§6.3).
 func (s *session) applyTransition(to config.Profile) {
 	engine, ok := s.smsc.engines[to]
 	if !ok {
