@@ -1,0 +1,21 @@
+%% Source Mermaid de submit-sm-flow.svg. Régénérer avec : make diagrams
+%% Éditer ce fichier (jamais le SVG dérivé), puis relancer make diagrams.
+flowchart TB
+  a["décodage PDU"]
+  b["Scenario Engine<br/>profil actif ; incrémente<br/>per_bind_clock + logical_clock"]
+  c["sélection de résultat pondérée<br/>graînée par (seed, per_bind_clock)"]
+  d["Fault Injector<br/>latence / erreur / timeout / disconnect"]
+  e["submit_sm_resp"]
+  f["DLR planifié dans<br/>pending_logical_schedule<br/>drainé par le Schedule Runner"]
+  g["PDU enregistrée dans le ring buffer<br/>inspectable en lecture seule"]
+
+  a --> b --> c --> d --> e
+  e --> f
+  e --> g
+
+  classDef step fill:#dbeafe,stroke:#2563eb,color:#111827;
+  classDef resp fill:#dcfce7,stroke:#16a34a,color:#111827;
+  classDef sched fill:#fef3c7,stroke:#d97706,color:#111827;
+  class a,b,c,d step;
+  class e resp;
+  class f,g sched;

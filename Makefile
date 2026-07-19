@@ -16,7 +16,11 @@ DOCKER_IMAGE          := smsc-simulator:dev
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all check tools build test fuzz loadtest lint vuln run snapshot docker clean
+.PHONY: all check tools build test fuzz loadtest lint vuln run snapshot docker diagrams clean
+
+# MERMAID_CLI renders the doc diagrams; pinned so regeneration is reproducible.
+MERMAID_CLI := @mermaid-js/mermaid-cli@11.16.0
+DIAGRAM_DIR := docs/guide/explanation/images
 
 # FUZZTIME bounds each active fuzz target so CI stays quick; override for a deep local run.
 FUZZTIME ?= 30s
@@ -74,6 +78,14 @@ snapshot:
 ## The Dockerfile is an S7 deliverable (plan §11); this target fails until S7 lands it.
 docker:
 	docker build --build-arg VERSION=$(VERSION) -t $(DOCKER_IMAGE) .
+
+## diagrams: regenerate the explanation SVGs from their Mermaid (.mmd) sources.
+## Requires Node (npx); the .mmd files are the source of truth, the .svg are derived.
+diagrams:
+	for f in $(DIAGRAM_DIR)/*.mmd; do \
+		npx --yes $(MERMAID_CLI) -i "$$f" -o "$${f%.mmd}.svg" \
+			-c $(DIAGRAM_DIR)/mermaid-config.json -b white; \
+	done
 
 clean:
 	rm -rf $(BIN_DIR)

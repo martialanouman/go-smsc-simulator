@@ -1,0 +1,34 @@
+%% Source Mermaid de architecture-overview.svg. Régénérer avec : make diagrams
+%% Éditer ce fichier (jamais le SVG dérivé), puis relancer make diagrams.
+flowchart TB
+  yml["smsc-simulator.yml<br/>entrée de config UNIQUE, lue au démarrage"]
+
+  subgraph binaire["smsc-simulator — binaire Go unique"]
+    direction TB
+    subgraph v1["SMSC virtuel #1"]
+      direction TB
+      e1["SMPP Server Engine<br/>Scenario Engine · Fault Injector<br/>Schedule Runner (tick)<br/>per_bind_clock · PDU Recorder (ring)"]
+    end
+    subgraph v2["SMSC virtuel #2 … N"]
+      direction TB
+      e2["SMPP Server Engine<br/>Scenario Engine · Fault Injector<br/>Schedule Runner (tick)<br/>per_bind_clock · PDU Recorder (ring)"]
+    end
+    obs["Observability API — HTTP, READ-ONLY, 1 port<br/>GET binds · received-pdus · logical-clock<br/>GET health · metrics<br/>(ni config, ni mutation)"]
+  end
+
+  gw["Passerelle sous test<br/>traite chaque SMSC virtuel comme un vrai connecteur"]
+
+  yml -->|parsée une fois ; aucune reconfiguration runtime| binaire
+  v1 -.-> obs
+  v2 -.-> obs
+  gw -->|bind SMPP — un par port| v1
+  gw -->|bind SMPP — un par port| v2
+
+  classDef cfg fill:#fef3c7,stroke:#d97706,color:#111827;
+  classDef vsmsc fill:#dbeafe,stroke:#2563eb,color:#111827;
+  classDef readonly fill:#dcfce7,stroke:#16a34a,color:#111827;
+  classDef ext fill:#f3f4f6,stroke:#6b7280,color:#111827;
+  class yml cfg;
+  class e1,e2 vsmsc;
+  class obs readonly;
+  class gw ext;
