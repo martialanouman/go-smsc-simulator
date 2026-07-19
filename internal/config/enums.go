@@ -159,6 +159,30 @@ func (m DeadCarrierMode) Valid() bool {
 	}
 }
 
+// EdgeCaseKind names one protocol malformation the server can stamp onto a response
+// when protocol_edge_cases is enabled (spec §6.1, plan §11 / T1). Like error_mix keys
+// it appears as a YAML list element, which KnownFields does NOT police, so Valid() is
+// the only guard against an unknown kind slipping through. The strings mirror the
+// smpp.EdgeCaseKind names; scenario.New maps config kinds onto codec kinds.
+type EdgeCaseKind string
+
+// EdgeCaseKind values — exactly the strings written in protocol_edge_cases.kinds.
+const (
+	EdgeCaseBadLength    EdgeCaseKind = "bad_length"
+	EdgeCaseUnknownCmdID EdgeCaseKind = "unknown_command_id"
+	EdgeCaseBadSequence  EdgeCaseKind = "bad_sequence"
+)
+
+// Valid reports whether k is a known edge-case kind.
+func (k EdgeCaseKind) Valid() bool {
+	switch k {
+	case EdgeCaseBadLength, EdgeCaseUnknownCmdID, EdgeCaseBadSequence:
+		return true
+	default:
+		return false
+	}
+}
+
 // SMPPErrorCode is an SMPP command status returned in place of a success, used by
 // scenario.params.error_code (throttling-carrier) and the keys of error_mix
 // (flaky-carrier). It is a named type so a typo is caught at load: error_mix is a

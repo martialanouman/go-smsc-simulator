@@ -227,6 +227,36 @@ func validateScenario(sc *ScenarioConfig, seeded bool) []error {
 	errs := validateScenarioParams(sc.Profile, sc.Params, spec)
 	errs = append(errs, validateLatency(&sc.Latency, spec)...)
 	errs = append(errs, validateDLR(sc.DLR, seeded)...)
+	errs = append(errs, validateEdgeCases(sc)...)
+	return errs
+}
+
+// validateEdgeCases checks the opt-in protocol_edge_cases block. Injection is a pure
+// tick function (no PRNG, no wall clock), so it is valid in both seeded and chaos mode
+// and needs no seed/clock coherence check — only the master switch, bounds and enum.
+func validateEdgeCases(sc *ScenarioConfig) []error {
+	if sc.ProtocolEdgeCases == nil {
+		return nil
+	}
+	// A tuning block without the master switch injects nothing — dead config, mirroring
+	// the MO disabled-mode unused-field checks.
+	if !sc.ProtocolEdgeCasesEnabled {
+		return []error{fmt.Errorf("%w: scenario.protocol_edge_cases set but protocol_edge_cases_enabled is false",
+			ErrParamNotExposed)}
+	}
+
+	var errs []error
+	if t := sc.ProtocolEdgeCases.InjectEveryTicks; t != nil && *t < 1 {
+		errs = append(errs, fmt.Errorf("%w: scenario.protocol_edge_cases.inject_every_ticks %d below 1",
+			ErrParamOutOfBounds, *t))
+	}
+	// kinds is a YAML list, so KnownFields does not police its elements: validate each.
+	// An empty list is fine — it means "all three", the same default as an absent block.
+	for _, k := range sc.ProtocolEdgeCases.Kinds {
+		if !k.Valid() {
+			errs = append(errs, fmt.Errorf("%w: scenario.protocol_edge_cases.kinds %q", ErrInvalidEnum, k))
+		}
+	}
 	return errs
 }
 

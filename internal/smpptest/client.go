@@ -144,6 +144,27 @@ func (c *Client) SubmitAsync(source, dest, message string) uint32 {
 	return seq
 }
 
+// SubmitRaw writes a submit_sm and returns its sequence number plus the raw bytes the
+// server sends back, read under the io timeout WITHOUT framing or decoding them. It
+// exists for protocol_edge_cases: a deliberately malformed submit_sm_resp (a lying
+// command_length, an unknown command_id, an out-of-order sequence) would fail Submit's
+// ReadPDU/Decode, so a test inspects the header bytes directly instead. The server writes
+// one response frame, so a single Read returns it whole on loopback.
+func (c *Client) SubmitRaw(source, dest, message string) (uint32, []byte) {
+	c.t.Helper()
+
+	seq := c.SubmitAsync(source, dest, message)
+	if err := c.conn.SetReadDeadline(time.Now().Add(ioTimeout)); err != nil {
+		c.t.Fatalf("set read deadline: %v", err)
+	}
+	buf := make([]byte, smpp.MaxPDULen)
+	n, err := c.conn.Read(buf)
+	if err != nil {
+		c.t.Fatalf("raw read: %v", err)
+	}
+	return seq, buf[:n]
+}
+
 // ExpectNoResponse asserts that no PDU arrives within d — the withheld-response
 // (timeout) case. It fails if a PDU is received or the read fails for any reason other
 // than the deadline.

@@ -1,0 +1,37 @@
+# edge-cases.yml — a healthy carrier that deliberately malforms its responses, to
+# exercise the gateway-under-test's protocol robustness (spec §6.1, plan §11 / T1).
+#
+# protocol_edge_cases is OPT-IN: without protocol_edge_cases_enabled every response is
+# encoded strictly. When enabled, the server stamps one deterministic malformation onto
+# the submit_sm_resp on the injecting ticks — a lying command_length, an unknown
+# command_id, or an out-of-order sequence_number — rotating through the configured kinds.
+# Injection is a pure per_bind_clock function: no wall clock, no PRNG, reproducible on a
+# seeded replay (invariant a).
+
+observability:
+  http_port: 9000
+
+virtual_smscs:
+  - name: carrier-edge-cases
+    port: 2775
+    bind_credentials:
+      system_id: smppclient1
+      password: secret
+    addr_ton: 1
+    addr_npi: 1
+    tls:
+      enabled: false
+    seed: 42
+    pdu_buffer_size: 10000
+    scenario:
+      profile: healthy
+      latency:
+        distribution: fixed
+        params: { ms: 20 }
+      protocol_edge_cases_enabled: true
+      protocol_edge_cases:
+        # Malform one response every 5 submits, rotating through all three kinds. Omit
+        # the whole block to inject on every tick with all kinds; omit `kinds` alone to
+        # keep all three; omit `inject_every_ticks` to default to 1.
+        inject_every_ticks: 5
+        kinds: [bad_length, unknown_command_id, bad_sequence]
