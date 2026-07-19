@@ -56,18 +56,26 @@ func (s *session) scheduleDLR(messageID string, msg *smpp.Message, plan *scenari
 }
 
 // drainDue emits every event whose due tick the clock has reached (voie a: normal drain on
-// an advancing per_bind_clock), in deterministic tick order.
+// an advancing per_bind_clock), in deterministic tick order. It stops as soon as a scheduled
+// disconnect closes the session: a cut link must not keep emitting same-tick receipts.
 func (s *session) drainDue(clock uint64) {
 	for _, ev := range s.sched.DrainDue(clock) {
 		s.dispatch(ev)
+		if s.state == stateClosed {
+			return
+		}
 	}
 }
 
 // flushSchedule emits every pending event regardless of tick (voie b: the quiescence
-// flush, so a schedule left at rest is never frozen — invariant d).
+// flush, so a schedule left at rest is never frozen — invariant d). Like drainDue it stops
+// once a scheduled disconnect closes the session.
 func (s *session) flushSchedule() {
 	for _, ev := range s.sched.DrainAll() {
 		s.dispatch(ev)
+		if s.state == stateClosed {
+			return
+		}
 	}
 }
 

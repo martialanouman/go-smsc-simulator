@@ -63,6 +63,51 @@ func TestE2E_S5_RandomDisconnectDeterministic(t *testing.T) {
 	}
 }
 
+// randomCutAtTick binds one session against a fresh seeded engine whose only rule is a
+// scope: random disconnect at atTick (after_response), drives `submits` submits, then reports
+// whether the bind was cut — either by the normal drain (submits >= atTick, voie a) or by the
+// quiescence flush (submits < atTick, voie b, thanks to the short flush window).
+func randomCutAtTick(t *testing.T, seed, atTick uint64, submits int) bool {
+	t.Helper()
+
+	cfg := baseConfig("carrier-rand-tick", pu64(seed), config.ScenarioConfig{
+		Profile: config.ProfileHealthy,
+		Latency: config.LatencyConfig{Distribution: config.LatencyFixed, Params: config.LatencyParams{MS: pu64(0)}},
+	})
+	cfg.ScheduledDisconnects = []config.ScheduledDisconnect{
+		{AtTick: atTick, Scope: config.DisconnectScopeRandom, When: config.DisconnectAfterResponse},
+	}
+	cfg.QuiescenceFlushMs = pu64(60)
+	h := startWith(t, cfg)
+	client := smpptest.Dial(t, h.smppAddr)
+	client.BindTransceiver(testSystemID, testPassword)
+
+	for i := 0; i < submits; i++ {
+		if resp := client.Submit("33600000000", "33611111111", "m"); resp.CommandStatus != smpp.StatusROK {
+			t.Fatalf("submit %d = %d, want ROK (after_response)", i, resp.CommandStatus)
+		}
+	}
+	return client.ClosedWithin(300 * time.Millisecond)
+}
+
+// TestE2E_S5_RandomDisconnectTickStable guards that the scope: random decision is a stable
+// property of (seed, at_tick), independent of the drain path: reaching the disconnect via the
+// normal drain (busy up to at_tick) and via the quiescence flush (one submit then silence)
+// must agree. Keying the coin on the live clock instead of at_tick would make them diverge.
+func TestE2E_S5_RandomDisconnectTickStable(t *testing.T) {
+	t.Parallel()
+
+	const atTick = 3
+	for seed := uint64(1); seed <= 6; seed++ {
+		viaDrain := randomCutAtTick(t, seed, atTick, atTick) // voie a: reaches at_tick
+		viaFlush := randomCutAtTick(t, seed, atTick, 1)      // voie b: flushed short of at_tick
+		if viaDrain != viaFlush {
+			t.Fatalf("seed %d: random cut differs by drain path (voie a=%v, voie b=%v); the coin must key on at_tick",
+				seed, viaDrain, viaFlush)
+		}
+	}
+}
+
 // TestE2E_S5_MOSequenceReproducible replays a scheduled MO sequence: the same seeded fixture,
 // driven the same way, delivers the same MOs in the same order — the MO mechanism is anchored
 // to per_bind_clock and does not perturb (or depend on) the scenario PRNG.

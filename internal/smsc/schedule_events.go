@@ -87,16 +87,19 @@ func (s *session) applyDueTransitions(tick uint64) {
 	}
 }
 
-// isDisconnectTarget reports whether this bind should cut itself for a disconnect of the
-// given scope, evaluated at the moment its clock reaches the disconnect tick.
-func (s *session) isDisconnectTarget(scope config.DisconnectScope) bool {
+// isDisconnectTarget reports whether this bind should cut itself for a disconnect scheduled
+// at dueTick. The random coin is keyed to dueTick (the event's at_tick), NOT the live
+// per_bind_clock: a bind flushed at quiescence has a clock short of at_tick, so keying on
+// the live clock would make the same scheduled disconnect decide differently depending on how
+// far traffic advanced. dueTick keeps the decision a stable property of (bind, at_tick).
+func (s *session) isDisconnectTarget(scope config.DisconnectScope, dueTick uint64) bool {
 	switch scope {
 	case config.DisconnectScopeAll:
 		return true
 	case config.DisconnectScopeOldest:
 		return s.smsc.binds.isOldest(s.id)
 	case config.DisconnectScopeRandom:
-		return s.scenarioState.DisconnectDraw(s.perBindClock)
+		return s.scenarioState.DisconnectDraw(dueTick)
 	default:
 		return false
 	}
@@ -111,7 +114,7 @@ func (s *session) isDisconnectTarget(scope config.DisconnectScope) bool {
 func (s *session) dueDisconnectBeforeResponse() bool {
 	for _, ev := range s.sched.DuePending(s.perBindClock) {
 		if d, ok := ev.Payload.(disconnectEvent); ok &&
-			d.when == config.DisconnectBeforeResponse && s.isDisconnectTarget(d.scope) {
+			d.when == config.DisconnectBeforeResponse && s.isDisconnectTarget(d.scope, ev.DueTick) {
 			return true
 		}
 	}
@@ -134,7 +137,7 @@ func (s *session) dispatch(ev schedule.Event) {
 		// on an active submit is handled earlier (peeked, cut before the response), so it
 		// never reaches here on voie a; reaching here means either an after_response cut, or
 		// a quiescence flush of an idle bind where before/after is moot — close in both.
-		if s.isDisconnectTarget(p.scope) {
+		if s.isDisconnectTarget(p.scope, ev.DueTick) {
 			s.state = stateClosed
 		}
 	default:
