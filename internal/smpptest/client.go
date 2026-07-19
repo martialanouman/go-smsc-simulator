@@ -9,6 +9,7 @@
 package smpptest
 
 import (
+	"crypto/tls"
 	"errors"
 	"net"
 	"testing"
@@ -39,6 +40,25 @@ func Dial(t testing.TB, addr string) *Client {
 	conn, err := net.DialTimeout("tcp", addr, ioTimeout)
 	if err != nil {
 		t.Fatalf("dial %s: %v", addr, err)
+	}
+	c := &Client{t: t, conn: conn}
+	t.Cleanup(c.Close)
+	return c
+}
+
+// DialTLS opens a TLS connection to a virtual SMSC and registers cleanup, for exercising
+// a tls-enabled listener. cfg is the client-side tls.Config: loopback tests pass
+// InsecureSkipVerify (the server's self-signed cert is not in any system pool), or a
+// RootCAs pool built from the server cert for stricter verification. The handshake is
+// forced here (rather than lazily on first I/O) so a handshake failure fails at the call
+// site, matching Dial's fail-at-dial contract.
+func DialTLS(t testing.TB, addr string, cfg *tls.Config) *Client {
+	t.Helper()
+
+	dialer := &net.Dialer{Timeout: ioTimeout}
+	conn, err := tls.DialWithDialer(dialer, "tcp", addr, cfg)
+	if err != nil {
+		t.Fatalf("tls dial %s: %v", addr, err)
 	}
 	c := &Client{t: t, conn: conn}
 	t.Cleanup(c.Close)

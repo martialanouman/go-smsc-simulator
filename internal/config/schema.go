@@ -63,10 +63,15 @@ func (b BindCredentials) LogValue() slog.Value {
 	)
 }
 
-// TLSConfig toggles TLS on a virtual SMSC's listener. Only the enabled flag is
-// modelled at S1; certificate fields (auto-signed generation) land at S6.
+// TLSConfig configures TLS on a virtual SMSC's listener (reflecting the gateway
+// connector's tls_enabled). When Enabled and no certificate is supplied, the engine
+// generates an in-memory self-signed cert at boot. CertFile/KeyFile are optional and
+// must be supplied together: validation rejects one without the other, and the files
+// must exist. Their parse happens at engine boot, still before any port opens.
 type TLSConfig struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled  bool   `yaml:"enabled"`
+	CertFile string `yaml:"cert_file"` // optional PEM cert path; empty => auto-generate when Enabled
+	KeyFile  string `yaml:"key_file"`  // optional PEM private-key path; must be set iff CertFile is
 }
 
 // ScenarioConfig selects the active profile and its exposed knobs, the served

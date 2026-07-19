@@ -10,6 +10,7 @@ package smsc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"github.com/martialanouman/go-smsc-simulator/internal/config"
 	"github.com/martialanouman/go-smsc-simulator/internal/observability"
 	"github.com/martialanouman/go-smsc-simulator/internal/recorder"
+	"github.com/martialanouman/go-smsc-simulator/internal/tlscert"
 )
 
 // Engine hosts every virtual SMSC in one process and implements
@@ -59,6 +61,23 @@ func New(cfgs []config.VirtualSMSCConfig, logger *slog.Logger) (*Engine, error) 
 		if err != nil {
 			e.closeListeners()
 			return nil, fmt.Errorf("listen on smpp port %d for %q: %w", cfg.Port, cfg.Name, err)
+		}
+		// TLS is per virtual SMSC: wrap the listener so Accept yields *tls.Conn, transparent
+		// to acceptLoop and the session. The cert is loaded (or self-signed and generated) at
+		// boot, off the deterministic path. Config validation already checked cert coherence,
+		// so a failure here is a genuine load/parse error — close the listeners opened so far
+		// and fail fast rather than leak a half-open engine.
+		if cfg.TLS.Enabled {
+			cert, err := tlscert.LoadOrGenerate(cfg.TLS)
+			if err != nil {
+				_ = ln.Close()
+				e.closeListeners()
+				return nil, fmt.Errorf("tls for %q: %w", cfg.Name, err)
+			}
+			ln = tls.NewListener(ln, &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12,
+			})
 		}
 		v := newVirtualSMSC(cfg, ln, logger)
 		e.smscs = append(e.smscs, v)

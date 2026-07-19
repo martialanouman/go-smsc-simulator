@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 )
 
@@ -46,6 +47,12 @@ var (
 	ErrInvalidEnum = errors.New("invalid enumerated value")
 	// ErrInvalidAddressRange flags an address_range that does not compile as a regexp.
 	ErrInvalidAddressRange = errors.New("invalid address_range regexp")
+	// ErrTLSCertKeyMismatch flags a tls block setting only one of cert_file/key_file.
+	ErrTLSCertKeyMismatch = errors.New("tls cert_file and key_file must be set together")
+	// ErrTLSCertNotReadable flags a supplied tls cert_file/key_file that cannot be read.
+	ErrTLSCertNotReadable = errors.New("tls certificate file not readable")
+	// ErrTLSCertWithoutEnabled flags cert_file/key_file supplied while tls.enabled is false.
+	ErrTLSCertWithoutEnabled = errors.New("tls cert_file/key_file set but tls.enabled is false")
 )
 
 // Latency params knob names, matching LatencyParams yaml keys.
@@ -158,6 +165,7 @@ func validateVirtualSMSC(vs *VirtualSMSCConfig) []error {
 		}
 	}
 
+	errs = append(errs, validateTLS(vs.Name, vs.TLS)...)
 	errs = append(errs, validateScenario(&vs.Scenario, seeded)...)
 	errs = append(errs, validateMOInjection(vs.MOInjection, seeded)...)
 
@@ -171,6 +179,39 @@ func validateVirtualSMSC(vs *VirtualSMSCConfig) []error {
 		}
 	}
 
+	return errs
+}
+
+// validateTLS checks the tls block: cert_file and key_file must be supplied together,
+// any supplied file must be readable, and a cert set while tls is disabled is a dead
+// config. Existence only — the actual load/parse happens at engine boot, still before
+// any port opens. Reading the filesystem opens no socket, so this stays within the
+// fail-fast gate (invariant b).
+func validateTLS(name string, tls TLSConfig) []error {
+	certSet := tls.CertFile != ""
+	keySet := tls.KeyFile != ""
+
+	if certSet != keySet {
+		// One without the other is incoherent; further file checks would only pile on.
+		return []error{fmt.Errorf("%w: virtual_smscs[%q].tls (cert_file=%q, key_file=%q)",
+			ErrTLSCertKeyMismatch, name, tls.CertFile, tls.KeyFile)}
+	}
+	if !certSet {
+		return nil // no cert supplied: valid — enabled triggers auto-generation, disabled is plain TCP
+	}
+
+	var errs []error
+	if !tls.Enabled {
+		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].tls", ErrTLSCertWithoutEnabled, name))
+	}
+	if _, err := os.Stat(tls.CertFile); err != nil {
+		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].tls.cert_file %q: %v",
+			ErrTLSCertNotReadable, name, tls.CertFile, err))
+	}
+	if _, err := os.Stat(tls.KeyFile); err != nil {
+		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].tls.key_file %q: %v",
+			ErrTLSCertNotReadable, name, tls.KeyFile, err))
+	}
 	return errs
 }
 
