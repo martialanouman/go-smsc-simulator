@@ -2,12 +2,12 @@
 %% Éditer ce fichier (jamais le SVG dérivé), puis relancer make diagrams.
 flowchart TB
   a["décodage PDU"]
-  b["Scenario Engine<br/><i>profil actif ; incrémente<br/>per_bind_clock + logical_clock</i>"]
-  c["sélection de résultat pondérée<br/><i>graînée par (seed, per_bind_clock)</i>"]
-  d["Fault Injector<br/><i>latence / erreur / timeout / disconnect</i>"]
+  b["Scenario Engine<br/>profil actif ; incrémente<br/>per_bind_clock + logical_clock"]
+  c["sélection de résultat pondérée<br/>graînée par (seed, per_bind_clock)"]
+  d["Fault Injector<br/>latence / erreur / timeout / disconnect"]
   e["submit_sm_resp"]
-  f["DLR planifié dans<br/>pending_logical_schedule<br/><i>drainé par le Schedule Runner</i>"]
-  g["PDU enregistrée dans le ring buffer<br/><i>inspectable en lecture seule</i>"]
+  f["DLR planifié dans<br/>pending_logical_schedule<br/>drainé par le Schedule Runner"]
+  g["PDU enregistrée dans le ring buffer<br/>inspectable en lecture seule"]
 
   a --> b --> c --> d --> e
   e --> f

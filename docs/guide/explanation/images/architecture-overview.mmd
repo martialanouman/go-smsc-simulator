@@ -1,7 +1,7 @@
 %% Source Mermaid de architecture-overview.svg. Régénérer avec : make diagrams
 %% Éditer ce fichier (jamais le SVG dérivé), puis relancer make diagrams.
 flowchart TB
-  yml["<b>smsc-simulator.yml</b><br/><i>entrée de config UNIQUE, lue au démarrage</i>"]
+  yml["smsc-simulator.yml<br/>entrée de config UNIQUE, lue au démarrage"]
 
   subgraph binaire["smsc-simulator — binaire Go unique"]
     direction TB
@@ -13,10 +13,10 @@ flowchart TB
       direction TB
       e2["SMPP Server Engine<br/>Scenario Engine · Fault Injector<br/>Schedule Runner (tick)<br/>per_bind_clock · PDU Recorder (ring)"]
     end
-    obs["<b>Observability API</b> — HTTP, READ-ONLY, 1 port<br/>GET binds · received-pdus · logical-clock<br/>GET health · metrics<br/><i>ni config, ni mutation</i>"]
+    obs["Observability API — HTTP, READ-ONLY, 1 port<br/>GET binds · received-pdus · logical-clock<br/>GET health · metrics<br/>(ni config, ni mutation)"]
   end
 
-  gw["<b>Passerelle sous test</b><br/><i>traite chaque SMSC virtuel comme un vrai connecteur</i>"]
+  gw["Passerelle sous test<br/>traite chaque SMSC virtuel comme un vrai connecteur"]
 
   yml -->|parsée une fois ; aucune reconfiguration runtime| binaire
   v1 -.-> obs

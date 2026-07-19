@@ -7,9 +7,10 @@
     "clusterBorder": "#cbd5e1",
     "lineColor": "#475569"
   },
+  "htmlLabels": false,
   "flowchart": {
     "curve": "basis",
-    "htmlLabels": true,
+    "htmlLabels": false,
     "padding": 12,
     "nodeSpacing": 45,
     "rankSpacing": 55
