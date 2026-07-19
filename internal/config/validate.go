@@ -49,8 +49,8 @@ var (
 	ErrInvalidAddressRange = errors.New("invalid address_range regexp")
 	// ErrTLSCertKeyMismatch flags a tls block setting only one of cert_file/key_file.
 	ErrTLSCertKeyMismatch = errors.New("tls cert_file and key_file must be set together")
-	// ErrTLSCertNotReadable flags a supplied tls cert_file/key_file that cannot be read.
-	ErrTLSCertNotReadable = errors.New("tls certificate file not readable")
+	// ErrTLSCertNotFound flags a supplied tls cert_file/key_file that does not exist.
+	ErrTLSCertNotFound = errors.New("tls certificate file not found")
 	// ErrTLSCertWithoutEnabled flags cert_file/key_file supplied while tls.enabled is false.
 	ErrTLSCertWithoutEnabled = errors.New("tls cert_file/key_file set but tls.enabled is false")
 )
@@ -183,10 +183,11 @@ func validateVirtualSMSC(vs *VirtualSMSCConfig) []error {
 }
 
 // validateTLS checks the tls block: cert_file and key_file must be supplied together,
-// any supplied file must be readable, and a cert set while tls is disabled is a dead
-// config. Existence only — the actual load/parse happens at engine boot, still before
-// any port opens. Reading the filesystem opens no socket, so this stays within the
-// fail-fast gate (invariant b).
+// any supplied file must exist, and a cert set while tls is disabled is a dead config.
+// This is an existence check only — a clear, early error for the common typo. The PEM is
+// actually loaded and parsed in smsc.New, before any listener opens, so a present-but-
+// malformed cert still fails fast without binding a port (invariant b). Reading the
+// filesystem opens no socket, so this stays within the fail-fast gate.
 func validateTLS(name string, tls TLSConfig) []error {
 	certSet := tls.CertFile != ""
 	keySet := tls.KeyFile != ""
@@ -206,11 +207,11 @@ func validateTLS(name string, tls TLSConfig) []error {
 	}
 	if _, err := os.Stat(tls.CertFile); err != nil {
 		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].tls.cert_file %q: %v",
-			ErrTLSCertNotReadable, name, tls.CertFile, err))
+			ErrTLSCertNotFound, name, tls.CertFile, err))
 	}
 	if _, err := os.Stat(tls.KeyFile); err != nil {
 		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].tls.key_file %q: %v",
-			ErrTLSCertNotReadable, name, tls.KeyFile, err))
+			ErrTLSCertNotFound, name, tls.KeyFile, err))
 	}
 	return errs
 }

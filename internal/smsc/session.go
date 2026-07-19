@@ -73,6 +73,11 @@ type session struct {
 	// at the SMSC's initial engine and is swapped by a scheduled transition — the only path
 	// that moves the active profile. Owned by readLoop, so no lock.
 	currentEngine *scenario.Engine
+	// currentProfile is the name of currentEngine's profile, tracked per bind so the served
+	// latency metric is labelled by THIS bind's active scenario (not the SMSC-global
+	// activeProfile, which under concurrent per-bind transitions is a last-writer value that
+	// could misattribute latency). Owned by readLoop, so no lock.
+	currentProfile string
 	// transitions is this bind's scheduled profile switches, sorted by at_tick; the cursor
 	// advances with the logical clock (applyDueTransitions). Kept off the Schedule Runner on
 	// purpose — a transition is latent config, never quiescence-flushed (see schedule_events).
@@ -142,24 +147,32 @@ func (s *session) run() {
 
 	go s.writeLoop()
 
-	s.readLoop()
+	// Teardown is deferred so it runs even if readLoop panics: the panic is recovered one
+	// frame up (engine.recoverSession), but only AFTER this releases the connection, joins
+	// the writer and deregisters the bind. Without the defer, a recovered panic would leak
+	// the writeLoop goroutine (blocked on an unclosed outbound), the FD and the bind — the
+	// opposite of the crash isolation S6/T1 promises.
+	//
+	// Order matters. First stop the closer and wait until it can no longer call send (a
+	// session can end on its own — a disconnect outcome, a client hang-up — while the
+	// engine shuts down concurrently; without this the closer could send on a closed
+	// outbound and panic). Only then close outbound, flush the writer, close the socket
+	// and deregister the bind.
+	defer func() {
+		close(done)
+		<-closerDone
+		close(s.outbound)
+		<-s.writerClosed
+		_ = s.conn.Close()
+		s.smsc.binds.remove(s.id)
+		// Balance the IncBind on a successful bind. A rejected bind never set bound, so the
+		// active-binds gauge only ever counts binds that actually registered.
+		if s.bound.Load() {
+			s.smsc.metrics.DecBind(s.smsc.cfg.Name, s.bindType)
+		}
+	}()
 
-	// Teardown order matters. First stop the closer and wait until it can no longer
-	// call send (a session can end on its own — a disconnect outcome, a client hang-up —
-	// while the engine shuts down concurrently; without this the closer could send on a
-	// closed outbound and panic). Only then close outbound, flush the writer, close the
-	// socket and deregister the bind.
-	close(done)
-	<-closerDone
-	close(s.outbound)
-	<-s.writerClosed
-	_ = s.conn.Close()
-	s.smsc.binds.remove(s.id)
-	// Balance the IncBind on a successful bind. A rejected bind never set bound, so the
-	// active-binds gauge only ever counts binds that actually registered.
-	if s.bound.Load() {
-		s.smsc.metrics.DecBind(s.smsc.cfg.Name, s.bindType)
-	}
+	s.readLoop()
 }
 
 // writeLoop is the sole writer of the connection. It drains outbound until the
@@ -356,6 +369,7 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 	s.canReceive = pdu.CommandID != smpp.BindTransmitter
 	s.scenarioState = s.smsc.scenario.NewBindState(s.smsc.cfg.Seed, s.smsc.cfg.Name, s.id)
 	s.currentEngine = s.smsc.scenario // starts on the initial profile; transitions swap it
+	s.currentProfile = string(s.smsc.cfg.Scenario.Profile)
 	s.bound.Store(true)
 	s.smsc.binds.add(bindInfo{
 		id:          s.id,
@@ -422,7 +436,7 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	name := s.smsc.cfg.Name
 	s.smsc.metrics.IncSubmit(name)
 	s.smsc.metrics.IncOutcome(name, outcomeLabel(decision.Outcome))
-	s.smsc.metrics.ObserveServedLatency(name, s.smsc.activeProfile.Load().(string), float64(decision.LatencyMS)/1000)
+	s.smsc.metrics.ObserveServedLatency(name, s.currentProfile, float64(decision.LatencyMS)/1000)
 	// Anchor the quiescence window: the flush fires this long after the last submit_sm.
 	// Off the deterministic content path (it decides only WHEN to drain, never what or in
 	// what order), so reading the wall clock here is legitimate even in seeded mode.

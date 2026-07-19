@@ -2,13 +2,19 @@ package smsc_test
 
 import (
 	"crypto/tls"
+	"io"
+	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/martialanouman/go-smsc-simulator/internal/config"
+	"github.com/martialanouman/go-smsc-simulator/internal/observability"
 	"github.com/martialanouman/go-smsc-simulator/internal/smpp"
 	"github.com/martialanouman/go-smsc-simulator/internal/smpptest"
+	"github.com/martialanouman/go-smsc-simulator/internal/smsc"
 )
 
 // tlsHealthyConfig is a healthy virtual SMSC with TLS enabled and no supplied cert, so
@@ -70,5 +76,33 @@ func TestE2E_PlainListenerRejectsTLSClient(t *testing.T) {
 	if err == nil {
 		_ = conn.Close()
 		t.Fatal("TLS handshake succeeded against a plain listener, want failure")
+	}
+}
+
+// TestNew_MalformedTLSCertFailsBeforeListening pins invariant (b) for TLS: a present but
+// malformed cert (which config validation only existence-checks) must fail in smsc.New
+// before any listener is opened, not after some ports are already bound.
+func TestNew_MalformedTLSCertFailsBeforeListening(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "cert.pem")
+	keyPath := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, []byte("not a pem"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("not a pem"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := tlsHealthyConfig("carrier-bad-cert")
+	cfg.TLS.CertFile = certPath
+	cfg.TLS.KeyFile = keyPath
+
+	logger := observability.NewLogger(io.Discard, slog.LevelInfo)
+	engine, err := smsc.New([]config.VirtualSMSCConfig{cfg}, nil, logger)
+	if err == nil {
+		_ = engine.Shutdown(t.Context())
+		t.Fatal("smsc.New accepted a malformed TLS cert, want a fail-fast error before listening")
 	}
 }

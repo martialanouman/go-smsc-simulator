@@ -12,7 +12,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net"
@@ -62,19 +61,17 @@ func SelfSigned() (tls.Certificate, error) {
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("create certificate: %w", err)
 	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
+	leaf, err := x509.ParseCertificate(der)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("marshal ecdsa key: %w", err)
+		return tls.Certificate{}, fmt.Errorf("parse generated certificate: %w", err)
 	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("assemble key pair: %w", err)
-	}
-	return cert, nil
+	// Assemble the tls.Certificate directly from the DER and the in-hand key — no PEM
+	// round-trip. Leaf is set so the TLS stack skips re-parsing on first handshake.
+	return tls.Certificate{
+		Certificate: [][]byte{der},
+		PrivateKey:  key,
+		Leaf:        leaf,
+	}, nil
 }
 
 // LoadOrGenerate returns the TLS certificate for a virtual SMSC: the configured PEM key

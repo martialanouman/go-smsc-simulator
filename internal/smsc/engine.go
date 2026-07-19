@@ -59,6 +59,22 @@ func New(cfgs []config.VirtualSMSCConfig, m metricsSink, logger *slog.Logger) (*
 		quit:   make(chan struct{}),
 	}
 
+	// Pre-load (or generate) every TLS cert BEFORE opening any listener. Config validation
+	// only existence-checks cert files, so a present-but-malformed or unreadable PEM would
+	// otherwise surface here — after prior instances' ports are already open, breaking the
+	// fail-fast promise (invariant b). Loading up front keeps a cert error truly port-free.
+	// Generation is boot-time only, off the deterministic path.
+	certs := make(map[string]tls.Certificate, len(cfgs))
+	for _, cfg := range cfgs {
+		if cfg.TLS.Enabled {
+			cert, err := tlscert.LoadOrGenerate(cfg.TLS)
+			if err != nil {
+				return nil, fmt.Errorf("tls for %q: %w", cfg.Name, err)
+			}
+			certs[cfg.Name] = cert
+		}
+	}
+
 	for _, cfg := range cfgs {
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
 		if err != nil {
@@ -66,19 +82,10 @@ func New(cfgs []config.VirtualSMSCConfig, m metricsSink, logger *slog.Logger) (*
 			return nil, fmt.Errorf("listen on smpp port %d for %q: %w", cfg.Port, cfg.Name, err)
 		}
 		// TLS is per virtual SMSC: wrap the listener so Accept yields *tls.Conn, transparent
-		// to acceptLoop and the session. The cert is loaded (or self-signed and generated) at
-		// boot, off the deterministic path. Config validation already checked cert coherence,
-		// so a failure here is a genuine load/parse error — close the listeners opened so far
-		// and fail fast rather than leak a half-open engine.
+		// to acceptLoop and the session. The cert was pre-loaded above, so nothing here can fail.
 		if cfg.TLS.Enabled {
-			cert, err := tlscert.LoadOrGenerate(cfg.TLS)
-			if err != nil {
-				_ = ln.Close()
-				e.closeListeners()
-				return nil, fmt.Errorf("tls for %q: %w", cfg.Name, err)
-			}
 			ln = tls.NewListener(ln, &tls.Config{
-				Certificates: []tls.Certificate{cert},
+				Certificates: []tls.Certificate{certs[cfg.Name]},
 				MinVersion:   tls.VersionTLS12,
 			})
 		}

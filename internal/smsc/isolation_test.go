@@ -67,8 +67,10 @@ func TestIsolation_SessionPanicDoesNotKillSiblings(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	// Panic on the first handled PDU of any session on "boom"; leave "healthy" untouched.
+	// Panic only once "boom" is bound, so the panic strikes a registered session — this
+	// exercises the teardown-on-panic path (the bind must still be deregistered).
 	testPanicHook = func(s *session) {
-		if s.smsc.cfg.Name == "boom" {
+		if s.smsc.cfg.Name == "boom" && s.state == stateBound {
 			panic("induced session panic")
 		}
 	}
@@ -96,9 +98,13 @@ func TestIsolation_SessionPanicDoesNotKillSiblings(t *testing.T) {
 		return net.JoinHostPort("127.0.0.1", strconv.Itoa(addr.(*net.TCPAddr).Port))
 	}
 
-	// Trigger the panic on "boom": SubmitAsync writes without reading, so the client
-	// never blocks on the response the crashed session will never send.
+	// Bind "boom" (registers the session), then trigger the panic with SubmitAsync, which
+	// writes without reading so the client never blocks on the response the crashed session
+	// will never send.
 	boom := smpptest.Dial(t, dial("boom"))
+	if resp := boom.BindTransceiver("smppclient1", "secret"); resp.CommandStatus != smpp.StatusROK {
+		t.Fatalf("boom bind status = %d, want ESME_ROK before the induced panic", resp.CommandStatus)
+	}
 	boom.SubmitAsync("33600000000", "33611111111", "boom")
 
 	// Wait for recoverSession to log the recovered panic. Its presence proves the panic
@@ -112,6 +118,16 @@ func TestIsolation_SessionPanicDoesNotKillSiblings(t *testing.T) {
 	}
 	if got := logs.String(); !strings.Contains(got, "virtual_smsc=boom") {
 		t.Errorf("recovered-panic log missing virtual_smsc=boom, got:\n%s", got)
+	}
+
+	// The deferred teardown must run despite the panic: the crashed bind is deregistered,
+	// not left orphaned (which would also leak its writeLoop goroutine and FD).
+	boomSMSC := engine.byName["boom"]
+	for boomSMSC.binds.count() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("boom bind still registered %v after panic; teardown did not run", boomSMSC.binds.count())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	// The sibling instance is unaffected: bind and submit succeed after boom's crash.

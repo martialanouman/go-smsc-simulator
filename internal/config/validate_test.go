@@ -185,7 +185,7 @@ func TestValidate_SchemaCoherence(t *testing.T) {
     scenario:
       profile: healthy
       latency: { distribution: fixed, params: { ms: 20 } }`},
-		{name: "tls cert files missing", wantErr: config.ErrTLSCertNotReadable, errHint: "cert_file", tail: `    tls: { enabled: true, cert_file: /does/not/exist.pem, key_file: /does/not/exist.key }
+		{name: "tls cert files missing", wantErr: config.ErrTLSCertNotFound, errHint: "cert_file", tail: `    tls: { enabled: true, cert_file: /does/not/exist.pem, key_file: /does/not/exist.key }
     scenario:
       profile: healthy
       latency: { distribution: fixed, params: { ms: 20 } }`},
