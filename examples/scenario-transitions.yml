@@ -1,0 +1,44 @@
+# scenario-transitions.yml — a scheduled circuit-breaker drill (S5).
+#
+# The carrier starts healthy, goes dead-carrier at tick 200 (every submit times
+# out — the gateway under test should open its circuit breaker), then recovers to
+# healthy at tick 400 (the breaker should half-open and close again). Along the
+# way it injects one mobile-originated message and schedules a disconnect, so an
+# end-to-end run exercises all three S5 mechanisms at once. Everything is anchored
+# to per_bind_clock and reproducible at seed 11.
+
+observability:
+  http_port: 9000
+
+virtual_smscs:
+  - name: carrier-drill
+    port: 2775
+    bind_credentials:
+      system_id: smppclient1
+      password: secret
+    addr_ton: 1
+    addr_npi: 1
+    seed: 11
+    pdu_buffer_size: 10000
+    quiescence_flush_ms: 100   # release pending MO/DLR quickly once traffic stops
+    scenario:
+      profile: healthy
+      latency:
+        distribution: fixed
+        params: { ms: 20 }
+
+    # One uplink message delivered when the bind's clock reaches tick 50.
+    mo_injection:
+      mode: scheduled
+      clock: logical
+      events:
+        - { at_tick: 50, source_addr: "33600000000", dest_addr: "33699999999", content: "STOP" }
+
+    # Cut every bind at tick 600, after answering that submit.
+    scheduled_disconnects:
+      - { at_tick: 600, scope: all, when: after_response }
+
+    # healthy 0-199 -> dead-carrier 200-399 -> healthy 400+
+    scheduled_transitions:
+      - { at_tick: 200, to_profile: dead-carrier }
+      - { at_tick: 400, to_profile: healthy }

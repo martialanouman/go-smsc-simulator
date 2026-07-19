@@ -49,6 +49,22 @@ func (r *bindRegistry) count() int {
 	return len(r.binds)
 }
 
+// isOldest reports whether id is the oldest bind still registered — the one with the
+// smallest id, since ids are assigned in monotonic accept order (plan §1.5). Used by a
+// scope: oldest scheduled disconnect: each bind evaluates this when its own clock reaches
+// the disconnect tick, so at most the oldest bind then open cuts itself.
+func (r *bindRegistry) isOldest(id uint64) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for other := range r.binds {
+		if other < id {
+			return false
+		}
+	}
+	_, ok := r.binds[id]
+	return ok
+}
+
 // views returns the active binds as observability DTOs, ordered by id so the
 // output is stable across calls (id is the accept order within a virtual SMSC).
 func (r *bindRegistry) views() []observability.BindView {

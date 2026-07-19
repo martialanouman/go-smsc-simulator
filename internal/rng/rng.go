@@ -28,6 +28,30 @@ func NewBind(seed uint64, smscID string, bindOrdinal uint64) *rand.Rand {
 	return rand.New(rand.NewPCG(lo, hi))
 }
 
+// scheduleSalt decorrelates a bind's schedule-side draws (the scope: random scheduled
+// disconnect coin) from its scenario decision PRNG. Sharing the stream would shift every
+// later scenario draw and break the seeded replay corpus (invariant a); salting the seed
+// gives an independent base.
+const scheduleSalt = 0x5350_4C49_5401 // "SPLIT" + 01, an arbitrary fixed constant
+
+// ScheduleBase derives a bind's schedule-side base value, decorrelated from its scenario
+// PRNG, for the idempotent per-tick coins of ScheduleCoin. Deterministic from
+// (seed, smscID, bindOrdinal); this path never reads the wall clock.
+func ScheduleBase(seed uint64, smscID string, bindOrdinal uint64) uint64 {
+	// Fold both derived words: lo alone is independent of bindOrdinal (only hi carries it),
+	// so mixing lo+hi is what keeps two binds' bases distinct.
+	lo, hi := deriveSeed(seed^scheduleSalt, smscID, bindOrdinal)
+	return splitmix64(lo + hi)
+}
+
+// ScheduleCoin maps (base, tick) to a stable ~50% boolean. It is PURE and idempotent: the
+// same (base, tick) always yields the same result, so a scope: random disconnect decision
+// can be peeked before a submit's response and re-evaluated when the event later drains
+// without ever drifting — and it never consumes the scenario PRNG stream (invariant a).
+func ScheduleCoin(base, tick uint64) bool {
+	return splitmix64(base+splitmix64(tick))&1 == 0
+}
+
 // NewChaos returns a non-deterministic PRNG for unseeded (chaos) mode — the only
 // place a random source may be seeded from process entropy. rand/v2's top-level
 // source is process-seeded, so two chaos draws give two independent PCG streams; we

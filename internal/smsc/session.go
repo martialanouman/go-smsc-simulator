@@ -69,6 +69,15 @@ type session struct {
 	systemID      string
 	perBindClock  uint64
 	scenarioState *scenario.BindState // created at successful bind; nil until then
+	// currentEngine is the profile this bind currently evaluates submits against. It starts
+	// at the SMSC's initial engine and is swapped by a scheduled transition — the only path
+	// that moves the active profile. Owned by readLoop, so no lock.
+	currentEngine *scenario.Engine
+	// transitions is this bind's scheduled profile switches, sorted by at_tick; the cursor
+	// advances with the logical clock (applyDueTransitions). Kept off the Schedule Runner on
+	// purpose — a transition is latent config, never quiescence-flushed (see schedule_events).
+	transitions      []config.ScheduledTransition
+	transitionCursor int
 
 	// sched is this bind's pending tick-scheduled events (DLRs at S4). It is drained by
 	// the read goroutine — on a submit that advances the clock (voie a) or, after the
@@ -238,6 +247,9 @@ func (s *session) readLoop() {
 				if s.sched.Len() > 0 {
 					if time.Since(s.lastSubmit) >= s.quiescence {
 						s.flushSchedule() // voie b: silence past the window drains pending events in tick order
+						if s.state == stateClosed {
+							return // a flushed scheduled disconnect cut this bind
+						}
 					}
 					continue
 				}
@@ -327,6 +339,7 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 	s.canSubmit = pdu.CommandID != smpp.BindReceiver
 	s.canReceive = pdu.CommandID != smpp.BindTransmitter
 	s.scenarioState = s.smsc.scenario.NewBindState(s.smsc.cfg.Seed, s.smsc.cfg.Name, s.id)
+	s.currentEngine = s.smsc.scenario // starts on the initial profile; transitions swap it
 	s.bound.Store(true)
 	s.smsc.binds.add(bindInfo{
 		id:          s.id,
@@ -334,6 +347,15 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 		bindType:    s.bindType,
 		connectedAt: time.Now(),
 	})
+
+	// Anchor the quiescence window to the bind: S5 events are enqueued here, before any
+	// submit_sm, so without this lastSubmit would stay zero and armReadDeadline would fire
+	// the flush immediately. Off the deterministic path (it decides only WHEN to drain,
+	// never what or in what order), so reading the wall clock here is legitimate even seeded.
+	s.lastSubmit = time.Now()
+	// Enqueue this bind's tick-anchored schedule (MO/disconnects/transitions) now that it
+	// owns a clock and a PRNG state — each bind gets its own copy, keyed to its own clock.
+	s.scheduleConfiguredEvents()
 
 	s.send(&smpp.PDU{
 		CommandID:      respID,
@@ -364,7 +386,10 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	// engine shuts down mid-latency we abandon the submit without advancing either
 	// clock, so logical_clock never counts a PDU the recorder never stored (plan §1.5).
 	tick := s.perBindClock + 1
-	decision := s.smsc.scenario.Evaluate(s.scenarioState, tick)
+	// Apply any transition due at this tick before evaluating, so the submit at at_tick runs
+	// under the new profile (the switch is keyed to the logical clock, never the wall clock).
+	s.applyDueTransitions(tick)
+	decision := s.currentEngine.Evaluate(s.scenarioState, tick)
 	if !s.serveLatency(decision.LatencyMS) {
 		return // engine shutting down: abandon this submit rather than sleep on
 	}
@@ -393,6 +418,14 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		PerBindClock: s.perBindClock,
 	})
 
+	// A scheduled disconnect due at this tick that fires before_response cuts the link
+	// without answering this submit — the same seam as an OutcomeDisconnect before_response.
+	// The event stays pending (peeked, not drained); teardown discards it with the session.
+	if s.dueDisconnectBeforeResponse() {
+		s.state = stateClosed
+		return
+	}
+
 	switch decision.Outcome {
 	case scenario.OutcomeSuccess:
 		s.send(&smpp.PDU{
@@ -410,9 +443,11 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		// A non-ROK submit_sm_resp carries no message_id body.
 		s.send(&smpp.PDU{CommandID: smpp.SubmitSMResp, CommandStatus: decision.Status, SequenceNumber: pdu.SequenceNumber})
 	case scenario.OutcomeTimeout:
-		// Withhold the response entirely; readLoop keeps reading so the client can send
-		// more (its own response_timeout fires eventually).
-		return
+		// Withhold the response entirely; readLoop keeps reading so the client can send more
+		// (its own response_timeout fires eventually). Fall through to the drain: this submit
+		// still advanced the clock, so any scheduled MO/disconnect due at this tick must fire —
+		// otherwise a pure-timeout profile under continuous traffic would freeze the schedule
+		// (the quiescence flush never triggers while submits keep arriving).
 	case scenario.OutcomeDisconnect:
 		if decision.DisconnectWhen == config.DisconnectAfterResponse {
 			s.send(&smpp.PDU{

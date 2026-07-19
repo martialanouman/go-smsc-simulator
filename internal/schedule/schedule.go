@@ -66,6 +66,21 @@ func (r *Runner) DrainDue(clock uint64) []Event {
 	return due
 }
 
+// DuePending returns, WITHOUT removing them, the events due at or before clock, in the
+// same (DueTick, Seq) order DrainDue would yield. It lets the session inspect an imminent
+// event — a before_response scheduled disconnect, which must be acted on before the
+// current PDU's response is written — while the event itself still drains, and still
+// flushes at quiescence, through the normal paths. Returns nil when none are due.
+func (r *Runner) DuePending(clock uint64) []Event {
+	n := sort.Search(len(r.pending), func(i int) bool { return r.pending[i].DueTick > clock })
+	if n == 0 {
+		return nil
+	}
+	out := make([]Event, n)
+	copy(out, r.pending[:n])
+	return out
+}
+
 // DrainAll removes and returns every pending event in (DueTick, Seq) order, regardless
 // of tick. This is the quiescence flush: when traffic has ceased the clock will never
 // advance again, so the whole schedule is released rather than left frozen (invariant

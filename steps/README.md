@@ -24,8 +24,8 @@ git mv steps/step-00N.md steps-done/
 | `steps-done/step-000.md` | S0 · Fondations & outillage | ✅ livré |
 | `steps-done/step-001.md` | S1 · Config déclarative + validation | ✅ livré |
 | `steps-done/step-002.md` | S2 · Squelette SMPP vertical | ✅ livré |
-| `steps/step-003.md` | S3 · Scénarios + pannes + déterminisme | ⏳ à faire |
-| `steps/step-004.md` | S4 · DLR + flush de quiescence | ⏳ à faire |
+| `steps-done/step-003.md` | S3 · Scénarios + pannes + déterminisme | ✅ livré |
+| `steps-done/step-004.md` | S4 · DLR + flush de quiescence | ✅ livré |
 | `steps/step-005.md` | S5 · MO + déconnexions + transitions | ⏳ à faire |
 | `steps/step-006.md` | S6 · Multi-SMSC + TLS + métriques | ⏳ à faire |
 | `steps/step-007.md` | S7 · Cas limites + fuzz + packaging + charge | ⏳ à faire |

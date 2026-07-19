@@ -164,6 +164,23 @@ func (c *Client) ExpectClosed() {
 	c.t.Fatalf("expected a closed connection, got a PDU")
 }
 
+// ClosedWithin reports whether the server closes the connection within d: true on a
+// non-timeout read error (EOF/reset), false if a PDU arrives or the read merely times out.
+// Unlike ExpectClosed it never fails the test, so a caller can branch on the result — e.g. a
+// scope: random scheduled disconnect that may or may not target this bind.
+func (c *Client) ClosedWithin(d time.Duration) bool {
+	c.t.Helper()
+
+	if err := c.conn.SetReadDeadline(time.Now().Add(d)); err != nil {
+		c.t.Fatalf("set read deadline: %v", err)
+	}
+	if _, err := smpp.ReadPDU(c.conn); err != nil {
+		var ne net.Error
+		return !errors.As(err, &ne) || !ne.Timeout() // a non-timeout error means the peer closed
+	}
+	return false // a PDU arrived: still open
+}
+
 // EnquireLink sends an enquire_link and returns the response PDU.
 func (c *Client) EnquireLink() *smpp.PDU {
 	c.t.Helper()

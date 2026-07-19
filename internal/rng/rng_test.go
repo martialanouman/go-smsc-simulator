@@ -78,3 +78,48 @@ func TestNewChaos_UsableAndIndependent(t *testing.T) {
 		t.Fatalf("two chaos sources must be independent")
 	}
 }
+
+func TestScheduleCoin_IdempotentAndSeedReproducible(t *testing.T) {
+	t.Parallel()
+
+	base := ScheduleBase(7, "carrier", 0)
+	// Idempotent: the same (base, tick) always yields the same coin, so a peek and a later
+	// re-evaluation of a scope: random disconnect never drift.
+	for tick := uint64(0); tick < 50; tick++ {
+		first := ScheduleCoin(base, tick)
+		second := ScheduleCoin(base, tick)
+		if first != second {
+			t.Fatalf("ScheduleCoin not idempotent at tick %d", tick)
+		}
+	}
+	// Reproducible: the same seed replays the same base and coins.
+	if ScheduleBase(7, "carrier", 0) != base {
+		t.Fatalf("ScheduleBase not reproducible for the same seed tuple")
+	}
+	// Not stuck: over a run of ticks the coin takes both values.
+	var trues, falses int
+	for tick := uint64(0); tick < 100; tick++ {
+		if ScheduleCoin(base, tick) {
+			trues++
+		} else {
+			falses++
+		}
+	}
+	if trues == 0 || falses == 0 {
+		t.Fatalf("ScheduleCoin degenerate: %d true, %d false over 100 ticks", trues, falses)
+	}
+}
+
+func TestScheduleBase_DecorrelatedFromScenarioStream(t *testing.T) {
+	t.Parallel()
+
+	// The schedule base must not track the scenario PRNG's first draws, or a random
+	// disconnect would correlate with scenario outcomes. Different bind ordinals must also
+	// give different bases.
+	if ScheduleBase(7, "carrier", 0) == ScheduleBase(7, "carrier", 1) {
+		t.Fatalf("schedule base identical across bind ordinals")
+	}
+	if ScheduleBase(7, "carrier", 0) == NewBind(7, "carrier", 0).Uint64() {
+		t.Fatalf("schedule base equals the scenario stream's first draw (correlated)")
+	}
+}

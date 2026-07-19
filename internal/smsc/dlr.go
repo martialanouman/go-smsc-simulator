@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/martialanouman/go-smsc-simulator/internal/scenario"
-	"github.com/martialanouman/go-smsc-simulator/internal/schedule"
 	"github.com/martialanouman/go-smsc-simulator/internal/smpp"
 )
 
@@ -56,30 +55,34 @@ func (s *session) scheduleDLR(messageID string, msg *smpp.Message, plan *scenari
 	})
 }
 
-// drainDue emits every DLR whose due tick the clock has reached (voie a: normal drain on
-// an advancing per_bind_clock).
+// drainDue emits every event whose due tick the clock has reached (voie a: normal drain on
+// an advancing per_bind_clock), in deterministic tick order. It stops as soon as a scheduled
+// disconnect closes the session: a cut link must not keep emitting same-tick receipts.
 func (s *session) drainDue(clock uint64) {
 	for _, ev := range s.sched.DrainDue(clock) {
-		s.emitDLR(ev)
+		s.dispatch(ev)
+		if s.state == stateClosed {
+			return
+		}
 	}
 }
 
-// flushSchedule emits every pending DLR regardless of tick (voie b: the quiescence
-// flush, so a schedule left at rest is never frozen — invariant d).
+// flushSchedule emits every pending event regardless of tick (voie b: the quiescence
+// flush, so a schedule left at rest is never frozen — invariant d). Like drainDue it stops
+// once a scheduled disconnect closes the session.
 func (s *session) flushSchedule() {
 	for _, ev := range s.sched.DrainAll() {
-		s.emitDLR(ev)
+		s.dispatch(ev)
+		if s.state == stateClosed {
+			return
+		}
 	}
 }
 
 // emitDLR builds and sends the deliver_sm delivery receipt for one scheduled event. It
 // runs on the read goroutine (the sole caller of send), so it never races the outbound
 // teardown.
-func (s *session) emitDLR(ev schedule.Event) {
-	d, ok := ev.Payload.(dlrEvent)
-	if !ok {
-		return // only DLR events are scheduled at S4; defensive against a future payload
-	}
+func (s *session) emitDLR(d dlrEvent) {
 	state, errCode := dlrWireState(d.outcome)
 	s.send(smpp.NewDeliveryReceipt(smpp.DeliveryReceipt{
 		MessageID:  d.messageID,
