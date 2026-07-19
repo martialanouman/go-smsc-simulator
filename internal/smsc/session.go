@@ -279,7 +279,18 @@ func (s *session) readLoop() {
 	}
 }
 
+// testPanicHook is nil in production. Tests set it to inject a panic into a session
+// goroutine (keyed on s.smsc.cfg.Name) to exercise the per-session recover boundary
+// (engine.recoverSession) — proving one instance panicking leaves its siblings serving.
+// It runs before any dispatch, off the deterministic decision path: it reads neither
+// the PRNG nor a clock, so seeded replay is unaffected.
+var testPanicHook func(*session)
+
 func (s *session) handle(pdu *smpp.PDU) {
+	if testPanicHook != nil {
+		testPanicHook(s)
+	}
+
 	switch pdu.CommandID {
 	case smpp.BindTransmitter, smpp.BindReceiver, smpp.BindTransceiver:
 		s.handleBind(pdu)

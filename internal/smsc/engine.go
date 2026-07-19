@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"sync"
 
 	"github.com/martialanouman/go-smsc-simulator/internal/config"
@@ -142,8 +143,28 @@ func (e *Engine) acceptLoop(v *virtualSMSC) {
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
+			// Last-resort panic boundary, scoped to this one session: a panic here must
+			// not escape to crash the process or the other virtual SMSCs (S6/T1).
+			defer e.recoverSession(v, id)
 			newSession(id, conn, v, e.quit).run()
 		}()
+	}
+}
+
+// recoverSession is the last-resort panic boundary for a single session goroutine.
+// A panic in one session (a codec bug, say) must never take down the process, its
+// accept loop, or the sibling virtual SMSCs — so it recovers here, logs loudly with
+// the offending virtual SMSC, bind id, panic value and stack, and lets the goroutine
+// unwind cleanly (wg.Done, deferred outside, still runs). It is deliberately scoped to
+// one session: never a global recover that would mask a determinism bug across
+// instances (S6/T1, CLAUDE.md "recover de dernier ressort par SMSC virtuel").
+func (e *Engine) recoverSession(v *virtualSMSC, id uint64) {
+	if r := recover(); r != nil {
+		e.logger.Error("session panic recovered",
+			slog.String("virtual_smsc", v.cfg.Name),
+			slog.Uint64("bind_id", id),
+			slog.Any("panic", r),
+			slog.String("stack", string(debug.Stack())))
 	}
 }
 
