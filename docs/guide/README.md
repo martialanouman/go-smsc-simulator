@@ -34,6 +34,7 @@ l'outil.*
 - [Reproduire un test à graine fixe](how-to/reproduire-un-test.md)
 - [Inspecter les PDU reçues](how-to/inspecter-les-pdu-recues.md)
 - [Scraper les métriques Prometheus](how-to/scraper-les-metriques.md)
+- [Visualiser l'activité avec Grafana](how-to/visualiser-avec-grafana.md)
 - [Configurer TLS](how-to/configurer-tls.md)
 - [Planifier des DLR asynchrones](how-to/planifier-des-dlr.md)
 - [Injecter des messages MO](how-to/injecter-des-mo.md)

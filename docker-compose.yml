@@ -21,3 +21,34 @@ services:
     ports:
       - "2775:2775"
       - "9000:9000"
+
+  # Opt-in monitoring stack. `docker compose up` stays a plain carrier; the two services
+  # below only start with `docker compose --profile monitoring up`, giving a live Grafana
+  # dashboard (http://localhost:3000) fed by Prometheus scraping smsc-simulator:9000.
+  prometheus:
+    profiles: ["monitoring"]
+    image: prom/prometheus:v3.1.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - smsc-simulator
+
+  grafana:
+    profiles: ["monitoring"]
+    image: grafana/grafana:11.4.0
+    environment:
+      # Test-tool convenience: no login wall, land straight on the dashboard.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus

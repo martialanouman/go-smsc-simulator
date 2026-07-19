@@ -1,0 +1,13 @@
+# Grafana datasource provisioning: wires the compose Prometheus as the default source.
+# The dashboard references this via its `datasource` template variable (type: datasource),
+# so the fixed uid below is what the variable resolves to out of the box.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

@@ -34,7 +34,12 @@ Ou en conteneur :
 
 ```bash
 docker compose up                            # carrier plaintext (2775 SMPP + 9000 observabilité)
+docker compose --profile monitoring up       # + Prometheus (9090) et Grafana (3000)
 ```
+
+Le profil `monitoring` (opt-in) ajoute un dashboard Grafana live pour suivre l'activité
+en temps réel — voir
+[Visualiser avec Grafana](docs/guide/how-to/visualiser-avec-grafana.md).
 
 Nouveau sur l'outil ? Suivez le
 **[tutoriel « Votre premier carrier simulé »](docs/guide/tutorials/01-premier-carrier.md)**.

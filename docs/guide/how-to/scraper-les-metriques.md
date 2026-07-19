@@ -61,5 +61,6 @@ donc agréger sans crainte d'explosion de cardinalité.
 
 ## Voir aussi
 
+- [how-to/visualiser-avec-grafana.md](visualiser-avec-grafana.md) — dashboard prêt à l'emploi
 - [reference/metriques-prometheus.md](../reference/metriques-prometheus.md)
 - [reference/api-observabilite.md](../reference/api-observabilite.md)

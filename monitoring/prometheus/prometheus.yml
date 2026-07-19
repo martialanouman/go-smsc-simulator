@@ -1,0 +1,12 @@
+# Prometheus scrape config for the compose monitoring stack (opt-in profile).
+# Targets the simulator's observability port by its compose service name. The simulator
+# exposes GET /metrics only when the .yml carries an `observability` block (examples/*.yml
+# use http_port: 9000).
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: smsc-simulator
+    static_configs:
+      - targets: ["smsc-simulator:9000"]
