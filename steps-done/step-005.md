@@ -1,7 +1,7 @@
 # Step 005 — S5 · MO planifiés + déconnexions & transitions de scénario planifiées
 
 > Plan de référence : `docs/plan-execution-simulateur-smsc.md` §9.
-> **Statut : ⏳ À FAIRE.** Complète les **trois formes déclaratives d'événements temporels**, toutes drainées par le Schedule Runner de S4.
+> **Statut : ✅ LIVRÉ** (PR #7, `feat(s5)`). Complète les **trois formes déclaratives d'événements temporels**, toutes drainées par le Schedule Runner de S4.
 
 ## Objectif
 
