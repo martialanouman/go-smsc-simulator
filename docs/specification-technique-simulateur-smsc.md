@@ -87,7 +87,9 @@ virtual_smscs:
     addr_npi: 1
     address_range: "^33.*"
     tls:
-      enabled: false        # if true and no cert supplied, a self-signed cert is auto-generated
+      enabled: false        # if true and no cert supplied, a self-signed cert is auto-generated at boot
+      cert_file: ""          # optional PEM cert path; set together with key_file (else fail-fast)
+      key_file: ""           # optional PEM private-key path
     seed: 42                 # set => deterministic mode; omit => unseeded/chaos mode
     pdu_buffer_size: 10000   # ring buffer capacity; raise for full load-test PDU inspection
     throughput_limit_per_sec: 5000   # nullable; enforced independently of the profile
@@ -138,6 +140,8 @@ Notes de sémantique :
 - Tous les mécanismes temporels référencent le **tick logique par bind** (`per_bind_clock`) dès qu'un `seed` est présent ; `clock: wallclock` n'est accepté que sans `seed` (mode chaos).
 - `mo_injection`, `scheduled_disconnects` et `scheduled_transitions` sont les trois formes déclaratives des actions temporelles — chacune ancrée à un tick, donc reproductible.
 - `quiescence_flush_ms` (nullable, défaut 250) règle la fenêtre d'inactivité au bout de laquelle un bind draine ses événements planifiés en ticks (DLR, puis MO/déconnexions/transitions) quand le trafic cesse (§6.3, invariant d) ; le déterminisme de contenu/ordre est préservé, seule la latence murale absolue d'un événement au repos varie.
+- `tls` est **optionnel par SMSC virtuel**. `enabled: true` sans `cert_file`/`key_file` fait générer un certificat **auto-signé** en mémoire au démarrage (ECDSA P-256, SAN `localhost`/`127.0.0.1`/`::1`) ; fournir `cert_file` **et** `key_file` (ensemble, sinon erreur de validation) charge un certificat PEM existant. La cohérence et l'existence des fichiers sont vérifiées au chargement (fail-fast, avant l'ouverture du moindre port) ; le parsing effectif a lieu au boot. La génération est hors du chemin déterministe (une seule fois au démarrage, jamais par PDU).
+- **Surface Prometheus** : `GET /metrics` (chemin nu, sans `/v1`) expose, en **lecture seule**, les métriques par SMSC virtuel — `smsc_active_binds`, `smsc_submit_sm_received_total`, `smsc_submit_sm_outcome_total`, `smsc_active_scenario`, `smsc_served_latency_seconds`. Les labels sont **bornés** : `virtual_smsc`, `bind_type`, `outcome`, `scenario` — jamais de MSISDN, `message_id` ni contenu (cardinalité non bornée = fuite mémoire + fuite de données).
 - Le `.yml` est validé intégralement au démarrage (schéma, cohérence `seed`/`clock`, profils connus) avant d'ouvrir le moindre port SMPP.
 
 ### 3.2 État d'exécution (en mémoire, borné, par SMSC virtuel)
