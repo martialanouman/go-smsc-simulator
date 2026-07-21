@@ -31,6 +31,9 @@ USER 65534:65534
 
 COPY --from=build /smsc-simulator /smsc-simulator
 
+# The MIT terms travel with the binary: scratch has no package manager to carry them.
+COPY LICENSE /LICENSE
+
 # The config is the only input, mounted read-only at runtime — nothing is baked in (the
 # simulator has no defaults on purpose). The SMPP and observability ports come from the
 # .yml; EXPOSE documents the fixture defaults (2775 SMPP, 9000 observability).
