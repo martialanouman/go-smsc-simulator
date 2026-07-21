@@ -116,3 +116,7 @@ testées et bloquantes.
 Un **binaire unique** héberge N SMSC virtuels (un listener SMPP par port), plus une
 **surface HTTP read-only** d'observabilité. Aucune dépendance d'infrastructure — Go pur,
 tout en mémoire. Voir [l'explication de l'architecture](docs/guide/explanation/architecture.md).
+
+## Licence
+
+Distribué sous licence [MIT](LICENSE).
