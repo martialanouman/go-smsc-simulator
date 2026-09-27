@@ -16,7 +16,7 @@ scenario:
   dlr:
     delay: { distribution: fixed, ticks: 5 }          # 5 ticks après le submit_sm d'origine
     outcome_weights: { delivered: 90, failed: 8, expired: 2 }
-    clock: logical                                     # défaut ; wallclock interdit avec un seed
+    clock: logical                                     # défaut ; wallclock réservé (rejeté)
 ```
 
 Pour chaque `submit_sm` **accepté**, un DLR est planifié `delay.ticks` ticks plus tard,

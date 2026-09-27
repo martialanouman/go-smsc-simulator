@@ -106,7 +106,7 @@ virtual_smscs:
       dlr:
         delay: { distribution: fixed, ticks: 5 }   # anchored to the origin submit_sm's per-bind tick
         outcome_weights: { delivered: 90, failed: 8, expired: 2 }
-        clock: logical                 # logical | wallclock (wallclock only valid when seed is absent)
+        clock: logical                 # logical (wallclock: reserved, rejected at load)
       protocol_edge_cases_enabled: false           # opt-in malformed-PDU injection (off => strict encoding)
       protocol_edge_cases:                          # optional tuning; only valid when *_enabled is true
         inject_every_ticks: 5                       # malform one submit_sm_resp every N ticks (default 1)
@@ -114,14 +114,13 @@ virtual_smscs:
 
     # Scheduled MO injection. Deterministic by tick.
     mo_injection:
-      mode: scheduled                  # scheduled | auto | disabled
-      clock: logical                   # logical enforced when seed is set; wallclock only in chaos
+      mode: scheduled                  # scheduled | disabled (auto: reserved, rejected at load)
+      clock: logical                   # logical (wallclock: reserved, rejected at load)
       events:
         - at_tick: 100
           source_addr: "33600000001"
           dest_addr: "33700000002"
           content: "MO probe A"
-      # when mode: auto, use instead:  rate_per_sec: 5, content_template: "..."
 
     # Scheduled connection faults, anchored to ticks.
     scheduled_disconnects:
@@ -140,7 +139,7 @@ virtual_smscs:
 Notes de sémantique :
 
 - `scenario.profile` doit appartenir au catalogue figé (§6.1) ; une valeur inconnue est une **erreur de validation au chargement** (fail-fast, le processus refuse de démarrer).
-- Tous les mécanismes temporels référencent le **tick logique par bind** (`per_bind_clock`) dès qu'un `seed` est présent ; `clock: wallclock` n'est accepté que sans `seed` (mode chaos).
+- Tous les mécanismes temporels référencent le **tick logique par bind** (`per_bind_clock`) dès qu'un `seed` est présent ; `clock: wallclock` et `mo_injection.mode: auto` sont **réservés** : rejetés à la validation tant qu'ils ne sont pas implémentés.
 - `mo_injection`, `scheduled_disconnects` et `scheduled_transitions` sont les trois formes déclaratives des actions temporelles — chacune ancrée à un tick, donc reproductible.
 - `quiescence_flush_ms` (nullable, défaut 250) règle la fenêtre d'inactivité au bout de laquelle un bind draine ses sorties planifiées en ticks (DLR et MO) quand le trafic cesse ; les déconnexions et transitions planifiées ne sont **jamais** vidées par le flush (elles ne se déclenchent qu'à l'atteinte de leur `at_tick` sur `per_bind_clock`, sinon un bind inactif — un receiver n'avance jamais son horloge — serait coupé ou basculé au bout de la fenêtre) (§6.3, invariant d) ; le déterminisme de contenu/ordre est préservé, seule la latence murale absolue d'un événement au repos varie.
 - `tls` est **optionnel par SMSC virtuel**. `enabled: true` sans `cert_file`/`key_file` fait générer un certificat **auto-signé** en mémoire au démarrage (ECDSA P-256, SAN `localhost`/`127.0.0.1`/`::1`). Ce certificat auto-signé est donc **loopback-only** : un client qui vérifie le nom d'hôte ne l'atteint qu'en loopback — un client non-loopback (p. ex. un service `docker-compose` joint par son nom de service) doit fournir `cert_file`/`key_file` dont les SAN couvrent ce nom. Fournir `cert_file` **et** `key_file` (ensemble, sinon erreur de validation) charge un certificat PEM existant. La cohérence et l'existence des fichiers sont vérifiées au chargement (fail-fast, avant l'ouverture du moindre port) ; le parsing effectif a lieu au boot. La génération est hors du chemin déterministe (une seule fois au démarrage, jamais par PDU).
@@ -213,7 +212,7 @@ Aucune base persistante ; toute la config vit dans le `.yml` versionné, refourn
 3. **Scenario Engine** — à chaque `submit_sm`, applique le comportement du profil **actif** (celui du `.yml` ou celui atteint par une transition planifiée), sélectionne un résultat pondéré, le transmet au Fault Injector. Incrémente à chaque PDU le `per_bind_clock` de la session (référence de timing déterministe) et le `logical_clock` global (observable d'assertion uniquement).
 4. **Fault Injector** — applique la distribution de latence et, pour `disconnect`, coupe la connexion TCP en cours de transaction (avant/après réponse, selon le profil ou une entrée `scheduled_disconnects`).
 5. **DLR Scheduler** — pour les messages « soumis » avec succès, planifie un `deliver_sm` DLR asynchrone. En mode déterministe, le délai est ancré au tick du `submit_sm` d'origine (`per_bind_clock`) ; les DLR en attente sont drainés à l'atteinte du tick dû ou par le flush de quiescence quand le bind cesse de recevoir du trafic.
-6. **MO Injector** — envoie des `deliver_sm` non sollicités selon la déclaration `mo_injection` du `.yml` : événements ancrés à un tick (mode `scheduled`) ou minuteur auto-planifié (mode `auto`) — piloté par `per_bind_clock` en mode déterministe, par horloge murale uniquement en mode chaos ; soumis au flush de quiescence.
+6. **MO Injector** — envoie des `deliver_sm` non sollicités selon la déclaration `mo_injection` du `.yml` : événements ancrés à un tick (mode `scheduled` ; le mode `auto` est réservé) — pilotés par `per_bind_clock` ; soumis au flush de quiescence.
 7. **Schedule Runner** — moteur de planification par bind qui draine `pending_logical_schedule` : DLR dus et MO planifiés, dans l'ordre de tick déterministe. Les déconnexions et **transitions de scénario planifiées** suivent un curseur par bind avancé uniquement par `per_bind_clock` et ne sont jamais vidées par le flush de quiescence.
 8. **PDU Recorder** — ajoute chaque PDU reçue au tampon circulaire borné, exposé en lecture seule.
 9. **Observability API** — surface HTTP **strictement en lecture seule** : inspection des PDU et des binds, compteur logique global, santé, métriques Prometheus. Aucun endpoint ne crée, modifie ou supprime quoi que ce soit.
@@ -231,7 +230,7 @@ Unique entrée de configuration. Structure détaillée en §3.1. Contrat :
 - Chargée et validée **une seule fois au démarrage** ; immuable ensuite.
 - Décrit la topologie complète : liste des SMSC virtuels, leurs ports/identifiants/TLS, leur `seed`, leur profil prédéfini paramétré, et leurs planifications (`mo_injection`, `scheduled_disconnects`, `scheduled_transitions`).
 - Versionnée comme fixture de test. Reconfigurer = éditer le fichier et relancer le processus (démarrage < 2 s).
-- Validation fail-fast : profil inconnu, `clock: wallclock` avec un `seed`, port en doublon, paramètre hors bornes → le processus refuse de démarrer avec un message d'erreur explicite, plutôt que de démarrer dans un état ambigu.
+- Validation fail-fast : profil inconnu, option réservée (`clock: wallclock`, `mo_injection.mode: auto`), port en doublon, paramètre requis absent ou hors bornes, second document YAML → le processus refuse de démarrer avec un message d'erreur explicite, plutôt que de démarrer dans un état ambigu.
 
 ### 5.2 Surface d'observabilité — `http://localhost:<observability-port>/v1` (READ-ONLY)
 
@@ -292,7 +291,7 @@ Le déterminisme du mode à graine s'appuie sur un compteur logique de PDU, jama
 - **Portée de la garantie** : la reproductibilité est **par bind**, pas globalement — la passerelle scale un connecteur avec `bind_pool_size` binds parallèles (§6.8 compagnon), et l'ordre d'entrelacement entre binds concurrents dépend de l'ordonnancement, non reproductible. Une assertion à ordre global doit épingler `bind_pool_size = 1`. La plupart des tests fonctionnels/CI (comportement précis à faible volume) sont dans ce cas ; les tests de charge multi-bind conservent le déterminisme par bind et l'agrégation statistique.
 - **Compteur global (`logical_clock`)** : exposé comme observable d'assertion en lecture seule (`GET /logical-clock`), jamais comme référence de planification.
 - **Flush de quiescence** : une planification en ticks n'avance qu'avec le trafic entrant. Dans le cas CI majoritaire (soumettre un lot puis attendre les DLR / une transition), le trafic cesse et le compteur se figerait. Chaque bind tient un `pending_logical_schedule` drainé (a) à l'atteinte du tick en fonctionnement normal, ou (b) par un flush après `quiescence_flush_ms` (défaut 250 ms) sans nouveau `submit_sm`, dans l'ordre de tick déterministe. Le déterminisme de séquence/contenu est préservé ; seule la latence murale absolue d'un événement au repos n'est pas garantie — sans conséquence pour une assertion de résultat.
-- **Mode chaos (sans graine)** : `clock: wallclock` autorisé et par défaut pour les mécanismes périodiques ; aucune prétention de reproductibilité.
+- **Mode chaos (sans graine)** : PRNG non graîné ; aucune prétention de reproductibilité (les planifications restent ancrées sur les ticks, `clock: wallclock` étant réservé).
 
 ### 6.4 Intégration CI/CD
 

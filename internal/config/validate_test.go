@@ -22,7 +22,6 @@ func TestValidate_Rules(t *testing.T) {
 		errHint string // substring naming the offending field, so an operator can act
 	}{
 		{"unknown profile", "unknown-profile.yml", config.ErrUnknownProfile, "profile"},
-		{"seeded wallclock", "seeded-wallclock.yml", config.ErrSeededWallclock, "clock"},
 		{"duplicate port", "duplicate-port.yml", config.ErrDuplicatePort, "port"},
 		{"param out of bounds", "param-out-of-bounds.yml", config.ErrParamOutOfBounds, "max_ms"},
 		{"unknown to_profile", "unknown-to-profile.yml", config.ErrUnknownToProfile, "to_profile"},
@@ -121,14 +120,10 @@ func TestValidate_SchemaCoherence(t *testing.T) {
 		{name: "latency min above max", wantErr: config.ErrParamOutOfBounds, errHint: "min_ms", tail: `    scenario:
       profile: healthy
       latency: { distribution: uniform, params: { min_ms: 30, max_ms: 10 } }`},
-		{name: "mo auto missing rate", wantErr: config.ErrMissingParam, errHint: "rate_per_sec", tail: `    scenario:
+		{name: "mo auto reserved", wantErr: config.ErrInvalidEnum, errHint: "mode auto", tail: `    scenario:
       profile: healthy
       latency: { distribution: fixed, params: { ms: 20 } }
-    mo_injection: { mode: auto, content_template: "x" }`},
-		{name: "mo auto missing template", wantErr: config.ErrMissingParam, errHint: "content_template", tail: `    scenario:
-      profile: healthy
-      latency: { distribution: fixed, params: { ms: 20 } }
-    mo_injection: { mode: auto, rate_per_sec: 5 }`},
+    mo_injection: { mode: auto, rate_per_sec: 5, content_template: "x" }`},
 		{name: "mo scheduled missing events", wantErr: config.ErrMissingParam, errHint: "events", tail: `    scenario:
       profile: healthy
       latency: { distribution: fixed, params: { ms: 20 } }
@@ -145,10 +140,57 @@ func TestValidate_SchemaCoherence(t *testing.T) {
       profile: healthy
       latency: { distribution: fixed, params: { ms: 20 } }
     mo_injection: { mode: bogus }`},
-		{name: "mo seeded wallclock", wantErr: config.ErrSeededWallclock, errHint: "clock", tail: `    scenario:
+		{name: "mo wallclock reserved", wantErr: config.ErrInvalidEnum, errHint: "mo_injection.clock", tail: `    scenario:
       profile: healthy
       latency: { distribution: fixed, params: { ms: 20 } }
-    mo_injection: { mode: auto, clock: wallclock, rate_per_sec: 5, content_template: "x" }`},
+    mo_injection: { mode: scheduled, clock: wallclock, events: [ { at_tick: 1, source_addr: "1", dest_addr: "2", content: "c" } ] }`},
+		{name: "dlr wallclock reserved", wantErr: config.ErrInvalidEnum, errHint: "dlr.clock", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+      dlr: { delay: { distribution: fixed, ticks: 5 }, outcome_weights: { delivered: 1 }, clock: wallclock }`},
+		{name: "mo content too long", wantErr: config.ErrParamOutOfBounds, errHint: "content", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    mo_injection: { mode: scheduled, events: [ { at_tick: 1, source_addr: "1", dest_addr: "2", content: "` + strings.Repeat("x", 255) + `" } ] }`},
+		{name: "mo source_addr too long", wantErr: config.ErrParamOutOfBounds, errHint: "source_addr", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+    mo_injection: { mode: scheduled, events: [ { at_tick: 1, source_addr: "` + strings.Repeat("1", 21) + `", dest_addr: "2", content: "c" } ] }`},
+		{name: "success_rate nan", wantErr: config.ErrParamOutOfBounds, errHint: "success_rate", tail: `    scenario:
+      profile: flaky-carrier
+      params: { success_rate: .nan, error_mix: { ESME_RSYSERR: 1 } }
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "flaky-carrier without success_rate", wantErr: config.ErrMissingParam, errHint: "success_rate", tail: `    scenario:
+      profile: flaky-carrier
+      params: { error_mix: { ESME_RSYSERR: 1 } }
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "dead-carrier without mode", wantErr: config.ErrMissingParam, errHint: "mode", tail: `    scenario:
+      profile: dead-carrier
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "normal stddev unbounded", wantErr: config.ErrParamOutOfBounds, errHint: "stddev_ms", tail: `    scenario:
+      profile: slow-carrier
+      latency: { distribution: normal, params: { mean_ms: 3000, stddev_ms: 18446744073709551615 } }`},
+		{name: "error_mix weight overflow", wantErr: config.ErrParamOutOfBounds, errHint: "error_mix", tail: `    scenario:
+      profile: flaky-carrier
+      params: { success_rate: 0.5, error_mix: { ESME_RSYSERR: 18446744073709551615, ESME_RSUBMITFAIL: 2 } }
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "dlr weight overflow", wantErr: config.ErrParamOutOfBounds, errHint: "outcome_weights", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+      dlr: { delay: { distribution: fixed, ticks: 5 }, outcome_weights: { delivered: 18446744073709551615, failed: 2 } }`},
+		{name: "error_mix ESME_ROK", wantErr: config.ErrInvalidEnum, errHint: "ESME_ROK", tail: `    scenario:
+      profile: flaky-carrier
+      params: { success_rate: 0.5, error_mix: { ESME_ROK: 1 } }
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "pdu_buffer_size too large", wantErr: config.ErrParamOutOfBounds, errHint: "pdu_buffer_size",
+			yaml: strings.Replace(baseSMSC, "pdu_buffer_size: 10000", "pdu_buffer_size: 100000000", 1) + `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }`},
+		{name: "second yaml document", wantErr: config.ErrMultipleDocuments, errHint: "document", tail: `    scenario:
+      profile: healthy
+      latency: { distribution: fixed, params: { ms: 20 } }
+---
+bogus: 1`},
 		{name: "disconnect invalid scope", wantErr: config.ErrInvalidEnum, errHint: "scope", tail: `    scenario:
       profile: healthy
       latency: { distribution: fixed, params: { ms: 20 } }

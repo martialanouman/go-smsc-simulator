@@ -37,9 +37,15 @@ const (
 	slowCarrierLatencyMaxMS = 4_000
 
 	pduBufferSizeMin = 1
-	portMin          = 1
-	portMax          = 65_535
-	octetMax         = 255 // addr_ton / addr_npi are single octets
+	pduBufferSizeMax = 1_000_000 // the ring is allocated up front; a typo must not OOM the boot
+
+	weightMax = 1_000_000_000 // per outcome weight; keeps any sum far from uint overflow
+
+	moAddrMaxLen    = 20  // SMPP v3.4 source_addr/destination_addr (21 octets incl. NUL)
+	moContentMaxLen = 254 // SMPP v3.4 short_message
+	portMin         = 1
+	portMax         = 65_535
+	octetMax        = 255 // addr_ton / addr_npi are single octets
 
 	quiescenceFlushMinMs = 1       // a zero window would flush before any traffic could arrive
 	quiescenceFlushMaxMs = 600_000 // 10 min ceiling, matching the served-latency cap
@@ -52,6 +58,7 @@ const (
 // rejected (ErrParamOutOfBounds).
 type profileSpec struct {
 	exposes      map[string]struct{}
+	requires     string // the defining knob that must be set, if any
 	latencyMinMS uint64
 	latencyMaxMS uint64
 }
@@ -76,16 +83,19 @@ var profileCatalogue = map[Profile]profileSpec{
 	},
 	ProfileFlakyCarrier: {
 		exposes:      exposes(knobSuccessRate, knobErrorMix, knobDisconnectIntervalTicks),
+		requires:     knobSuccessRate,
 		latencyMinMS: 0,
 		latencyMaxMS: latencyMSMax,
 	},
 	ProfileThrottlingCarrier: {
 		exposes:      exposes(knobThroughputCapPerSec, knobErrorCode),
+		requires:     knobThroughputCapPerSec,
 		latencyMinMS: 0,
 		latencyMaxMS: latencyMSMax,
 	},
 	ProfileDeadCarrier: {
 		exposes:      exposes(knobMode),
+		requires:     knobMode,
 		latencyMinMS: 0,
 		latencyMaxMS: latencyMSMax,
 	},
@@ -96,6 +106,7 @@ var profileCatalogue = map[Profile]profileSpec{
 	},
 	ProfileThroughputCapped: {
 		exposes:      exposes(knobThroughputCapPerSec),
+		requires:     knobThroughputCapPerSec,
 		latencyMinMS: 0,
 		latencyMaxMS: latencyMSMax,
 	},

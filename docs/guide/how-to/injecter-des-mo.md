@@ -11,7 +11,7 @@ Des MO ancrés à des ticks logiques, donc reproductibles :
 ```yaml
 mo_injection:
   mode: scheduled
-  clock: logical                 # imposé en mode graîné ; wallclock seulement en chaos
+  clock: logical                 # seule valeur acceptée (wallclock est réservé)
   events:
     - at_tick: 100
       source_addr: "33600000001"
@@ -26,19 +26,14 @@ mo_injection:
 Chaque événement est émis quand le `per_bind_clock` atteint `at_tick`. À `seed` fixe,
 c'est reproductible au bit près.
 
-## Mode `auto` — MO à un débit
+## Mode `auto` — réservé
 
-Pour saturer le chemin MO (tests de charge/endurance) :
+`mode: auto` (MO à un débit, `rate_per_sec`/`content_template`) est **réservé mais non
+implémenté** : la validation le rejette plutôt que de n'injecter silencieusement aucun MO.
+Utilisez `scheduled`.
 
-```yaml
-mo_injection:
-  mode: auto
-  rate_per_sec: 5
-  content_template: "auto MO {{seq}}"
-```
-
-En mode graîné, le débit reste ancré aux ticks ; en mode chaos, il suit l'horloge
-murale.
+Bornes des événements (SMPP v3.4) : `source_addr`/`dest_addr` ≤ 20 octets, `content` ≤
+254 octets — au-delà, la config est rejetée.
 
 ## Mode `disabled`
 

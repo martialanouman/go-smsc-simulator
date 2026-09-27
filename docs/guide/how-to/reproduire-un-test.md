@@ -36,9 +36,9 @@ tests fonctionnels à faible volume sont dans ce cas.
 
 ## Ne jamais mélanger horloge murale et graine
 
-La validation **refuse** `clock: wallclock` en présence d'un `seed` (erreur
-`wallclock clock requires no seed`). En mode déterministe, laissez `clock: logical`
-(le défaut) pour `dlr` et `mo_injection`.
+Tous les mécanismes planifiés sont ancrés sur `per_bind_clock` ; `clock: wallclock` est
+réservé et **rejeté** à la validation. Laissez `clock: logical` (le défaut) pour `dlr` et
+`mo_injection`.
 
 De même, `throughput_limit_per_sec` est **interdit** avec un `seed` sur un profil
 non-throughput (erreur `throughput_limit_per_sec requires no seed…`) : le plafond de

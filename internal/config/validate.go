@@ -3,8 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
+	"slices"
 )
 
 // This file is the fail-fast gate. validate runs inside Load, before Load returns,
@@ -21,8 +23,6 @@ import (
 var (
 	// ErrUnknownProfile flags a scenario.profile outside the frozen catalogue.
 	ErrUnknownProfile = errors.New("unknown scenario profile")
-	// ErrSeededWallclock flags clock: wallclock combined with a seed (chaos-only).
-	ErrSeededWallclock = errors.New("wallclock clock requires no seed")
 	// ErrSeededThroughputLimit flags throughput_limit_per_sec combined with a seed on a
 	// deterministic profile. The limit is a real-time wall-clock gate; on a seeded
 	// deterministic profile it would silently break invariant (a). Allowed without a
@@ -124,9 +124,9 @@ func validateVirtualSMSC(vs *VirtualSMSCConfig) []error {
 		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].addr_npi %d not in [0,%d]",
 			ErrParamOutOfBounds, vs.Name, vs.AddrNPI, octetMax))
 	}
-	if vs.PDUBufferSize < pduBufferSizeMin {
-		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].pdu_buffer_size %d below %d",
-			ErrParamOutOfBounds, vs.Name, vs.PDUBufferSize, pduBufferSizeMin))
+	if vs.PDUBufferSize < pduBufferSizeMin || vs.PDUBufferSize > pduBufferSizeMax {
+		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].pdu_buffer_size %d not in [%d,%d]",
+			ErrParamOutOfBounds, vs.Name, vs.PDUBufferSize, pduBufferSizeMin, pduBufferSizeMax))
 	}
 	if vs.ThroughputLimitPerSec != nil && *vs.ThroughputLimitPerSec < 1 {
 		errs = append(errs, fmt.Errorf("%w: virtual_smscs[%q].throughput_limit_per_sec %d below 1",
@@ -166,8 +166,8 @@ func validateVirtualSMSC(vs *VirtualSMSCConfig) []error {
 	}
 
 	errs = append(errs, validateTLS(vs.Name, vs.TLS)...)
-	errs = append(errs, validateScenario(&vs.Scenario, seeded)...)
-	errs = append(errs, validateMOInjection(vs.MOInjection, seeded)...)
+	errs = append(errs, validateScenario(&vs.Scenario)...)
+	errs = append(errs, validateMOInjection(vs.MOInjection)...)
 
 	for i := range vs.ScheduledDisconnects {
 		errs = append(errs, validateScheduledDisconnect(&vs.ScheduledDisconnects[i])...)
@@ -218,7 +218,7 @@ func validateTLS(name string, tls TLSConfig) []error {
 
 // validateScenario gates on the profile: an unknown profile yields exactly one
 // error (there is no known knob set to check against), avoiding a cascade.
-func validateScenario(sc *ScenarioConfig, seeded bool) []error {
+func validateScenario(sc *ScenarioConfig) []error {
 	spec, known := profileCatalogue[sc.Profile]
 	if !known {
 		return []error{fmt.Errorf("%w: scenario.profile %q", ErrUnknownProfile, sc.Profile)}
@@ -226,7 +226,7 @@ func validateScenario(sc *ScenarioConfig, seeded bool) []error {
 
 	errs := validateScenarioParams(sc.Profile, sc.Params, spec)
 	errs = append(errs, validateLatency(&sc.Latency, spec)...)
-	errs = append(errs, validateDLR(sc.DLR, seeded)...)
+	errs = append(errs, validateDLR(sc.DLR)...)
 	errs = append(errs, validateEdgeCases(sc)...)
 	return errs
 }
@@ -280,15 +280,16 @@ func validateScenarioParams(profile Profile, p ScenarioParams, spec profileSpec)
 		}
 	}
 
-	// The throughput profiles are defined by their cap: without it the gate is never
-	// built and the profile silently behaves as healthy, so the cap is required.
-	if throughputExempt(profile) && p.ThroughputCapPerSec == nil {
-		errs = append(errs, fmt.Errorf("%w: scenario.params.throughput_cap_per_sec required by profile %q",
-			ErrMissingParam, profile))
+	// A profile's defining knob is required: without it the profile silently degrades
+	// (no cap → healthy, no success_rate → always succeeds, no mode → timeout_all).
+	if knob := spec.requires; knob != "" && !slices.Contains(setParamKnobs(p), knob) {
+		errs = append(errs, fmt.Errorf("%w: scenario.params.%s required by profile %q",
+			ErrMissingParam, knob, profile))
 	}
 
 	if p.SuccessRate != nil {
-		if _, ok := spec.exposes[knobSuccessRate]; ok && (*p.SuccessRate < 0 || *p.SuccessRate > 1) {
+		// Written as !(in range) so NaN, which fails every comparison, is rejected too.
+		if _, ok := spec.exposes[knobSuccessRate]; ok && !(*p.SuccessRate >= 0 && *p.SuccessRate <= 1) {
 			errs = append(errs, fmt.Errorf("%w: scenario.params.success_rate %g not in [0,1]",
 				ErrParamOutOfBounds, *p.SuccessRate))
 		}
@@ -307,7 +308,7 @@ func validateScenarioParams(profile Profile, p ScenarioParams, spec profileSpec)
 		}
 	}
 	if p.ErrorCode != nil {
-		if _, ok := spec.exposes[knobErrorCode]; ok && !p.ErrorCode.Valid() {
+		if _, ok := spec.exposes[knobErrorCode]; ok && !p.ErrorCode.ValidError() {
 			errs = append(errs, fmt.Errorf("%w: scenario.params.error_code %q",
 				ErrInvalidEnum, *p.ErrorCode))
 		}
@@ -320,18 +321,13 @@ func validateScenarioParams(profile Profile, p ScenarioParams, spec profileSpec)
 	// error_mix keys bypass KnownFields (map), so each key is validated here.
 	if p.ErrorMix != nil {
 		if _, ok := spec.exposes[knobErrorMix]; ok {
-			var sum uint
-			for code, weight := range p.ErrorMix {
-				if !code.Valid() {
+			for _, code := range slices.Sorted(maps.Keys(p.ErrorMix)) {
+				if !code.ValidError() {
 					errs = append(errs, fmt.Errorf("%w: scenario.params.error_mix key %q",
 						ErrInvalidEnum, code))
 				}
-				sum += weight
 			}
-			if sum == 0 {
-				errs = append(errs, fmt.Errorf("%w: scenario.params.error_mix weights sum to zero",
-					ErrParamOutOfBounds))
-			}
+			errs = append(errs, validateWeights("scenario.params.error_mix", slices.Collect(maps.Values(p.ErrorMix)))...)
 		}
 	}
 
@@ -380,7 +376,7 @@ func validateLatency(lat *LatencyConfig, spec profileSpec) []error {
 	}
 
 	var errs []error
-	for knob := range set {
+	for _, knob := range slices.Sorted(maps.Keys(set)) {
 		if _, ok := allowed[knob]; !ok {
 			errs = append(errs, fmt.Errorf("%w: scenario.latency.params.%s not used by distribution %q",
 				ErrParamNotExposed, knob, lat.Distribution))
@@ -406,6 +402,12 @@ func validateLatency(lat *LatencyConfig, spec profileSpec) []error {
 			errs = append(errs, fmt.Errorf("%w: scenario.latency.params.min_ms %d above max_ms %d",
 				ErrParamOutOfBounds, *lo, *hi))
 		}
+	}
+	// stddev_ms is a spread, not a position, but an unbounded one lets draws escape every
+	// latency ceiling (and overflow the float→uint64 conversion); cap it at the window top.
+	if v, ok := set[latStddevMS]; ok && *v > spec.latencyMaxMS {
+		errs = append(errs, fmt.Errorf("%w: scenario.latency.params.stddev_ms %d above %d",
+			ErrParamOutOfBounds, *v, spec.latencyMaxMS))
 	}
 	if v, ok := set[latIntervalTicks]; ok && *v < 1 {
 		errs = append(errs, fmt.Errorf("%w: scenario.latency.params.interval_ticks %d below 1",
@@ -447,17 +449,14 @@ func latencyRequiredKnobs(d LatencyDistribution) []string {
 }
 
 // validateDLR checks optional DLR generation. A nil block means no DLRs.
-func validateDLR(dlr *DLRConfig, seeded bool) []error {
+func validateDLR(dlr *DLRConfig) []error {
 	if dlr == nil {
 		return nil
 	}
 
 	var errs []error
-	if !clockValid(dlr.Clock) {
-		errs = append(errs, fmt.Errorf("%w: scenario.dlr.clock %q", ErrInvalidEnum, dlr.Clock))
-	} else if seeded && dlr.Clock == ClockWallclock {
-		errs = append(errs, fmt.Errorf("%w: scenario.dlr.clock is wallclock but seed is set",
-			ErrSeededWallclock))
+	if err := validateClock("scenario.dlr.clock", dlr.Clock); err != nil {
+		errs = append(errs, err)
 	}
 
 	// S1 supports only the fixed DLR delay; uniform bounds are reserved for a later
@@ -488,16 +487,31 @@ func validateDLR(dlr *DLRConfig, seeded bool) []error {
 			ErrParamNotExposed))
 	}
 
-	if dlr.OutcomeWeights.Delivered+dlr.OutcomeWeights.Failed+dlr.OutcomeWeights.Expired == 0 {
-		errs = append(errs, fmt.Errorf("%w: scenario.dlr.outcome_weights sum to zero",
-			ErrParamOutOfBounds))
-	}
+	w := dlr.OutcomeWeights
+	errs = append(errs, validateWeights("scenario.dlr.outcome_weights", []uint{w.Delivered, w.Failed, w.Expired})...)
 
 	return errs
 }
 
+// validateWeights bounds each weight so their sum cannot wrap (a wrapped sum would pass
+// the non-zero check yet make some outcomes undrawable), and requires a non-zero sum so a
+// weighted pick always resolves.
+func validateWeights(field string, weights []uint) []error {
+	var sum uint
+	for _, w := range weights {
+		if w > weightMax {
+			return []error{fmt.Errorf("%w: %s weight %d above %d", ErrParamOutOfBounds, field, w, weightMax)}
+		}
+		sum += w
+	}
+	if sum == 0 {
+		return []error{fmt.Errorf("%w: %s weights sum to zero", ErrParamOutOfBounds, field)}
+	}
+	return nil
+}
+
 // validateMOInjection checks optional MO injection. A nil block means no MO.
-func validateMOInjection(mo *MOInjectionConfig, seeded bool) []error {
+func validateMOInjection(mo *MOInjectionConfig) []error {
 	if mo == nil {
 		return nil
 	}
@@ -507,11 +521,8 @@ func validateMOInjection(mo *MOInjectionConfig, seeded bool) []error {
 		// Unknown mode: no per-mode field expectations to check, so stop here.
 		return []error{fmt.Errorf("%w: mo_injection.mode %q", ErrInvalidEnum, mo.Mode)}
 	}
-	if !clockValid(mo.Clock) {
-		errs = append(errs, fmt.Errorf("%w: mo_injection.clock %q", ErrInvalidEnum, mo.Clock))
-	} else if seeded && mo.Clock == ClockWallclock {
-		errs = append(errs, fmt.Errorf("%w: mo_injection.clock is wallclock but seed is set",
-			ErrSeededWallclock))
+	if err := validateClock("mo_injection.clock", mo.Clock); err != nil {
+		errs = append(errs, err)
 	}
 
 	switch mo.Mode {
@@ -528,22 +539,25 @@ func validateMOInjection(mo *MOInjectionConfig, seeded bool) []error {
 			errs = append(errs, fmt.Errorf("%w: mo_injection.content_template unused in mode scheduled",
 				ErrParamNotExposed))
 		}
+		// The events go on the wire verbatim: bound them to the SMPP v3.4 field sizes, or
+		// the content would be silently truncated and an address would encode a PDU our own
+		// decoder rejects.
+		for i, ev := range mo.Events {
+			for _, f := range []struct {
+				name string
+				v    string
+				max  int
+			}{{"source_addr", ev.SourceAddr, moAddrMaxLen}, {"dest_addr", ev.DestAddr, moAddrMaxLen}, {"content", ev.Content, moContentMaxLen}} {
+				if len(f.v) > f.max {
+					errs = append(errs, fmt.Errorf("%w: mo_injection.events[%d].%s is %d bytes, above %d",
+						ErrParamOutOfBounds, i, f.name, len(f.v), f.max))
+				}
+			}
+		}
 	case MOModeAuto:
-		if mo.RatePerSec == nil {
-			errs = append(errs, fmt.Errorf("%w: mo_injection.rate_per_sec for mode auto",
-				ErrMissingParam))
-		} else if *mo.RatePerSec < 1 {
-			errs = append(errs, fmt.Errorf("%w: mo_injection.rate_per_sec %d below 1",
-				ErrParamOutOfBounds, *mo.RatePerSec))
-		}
-		if mo.ContentTemplate == nil {
-			errs = append(errs, fmt.Errorf("%w: mo_injection.content_template for mode auto",
-				ErrMissingParam))
-		}
-		if len(mo.Events) > 0 {
-			errs = append(errs, fmt.Errorf("%w: mo_injection.events unused in mode auto",
-				ErrParamNotExposed))
-		}
+		// Reserved in the schema, not implemented: accepting it would silently inject nothing.
+		errs = append(errs, fmt.Errorf("%w: mo_injection.mode auto is reserved (not implemented); use scheduled",
+			ErrInvalidEnum))
 	case MOModeDisabled:
 		// A disabled block injects nothing, so any per-mode field set alongside it is
 		// dead config — flag it, mirroring the scheduled/auto unused-field checks.
@@ -576,8 +590,16 @@ func validateScheduledDisconnect(d *ScheduledDisconnect) []error {
 	return errs
 }
 
-// clockValid treats an omitted clock as the safe default (logical), which is valid
-// in both seeded and chaos modes; only an explicit unknown string is rejected.
-func clockValid(c Clock) bool {
-	return c == "" || c.Valid()
+// validateClock accepts an omitted clock (the logical default) or logical. wallclock is
+// reserved in the schema but not implemented — every scheduled mechanism is tick-anchored —
+// so it is rejected rather than silently ignored.
+func validateClock(field string, c Clock) error {
+	switch c {
+	case "", ClockLogical:
+		return nil
+	case ClockWallclock:
+		return fmt.Errorf("%w: %s wallclock is reserved (not implemented); use logical", ErrInvalidEnum, field)
+	default:
+		return fmt.Errorf("%w: %s %q", ErrInvalidEnum, field, c)
+	}
 }
