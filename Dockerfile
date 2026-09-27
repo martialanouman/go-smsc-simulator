@@ -5,7 +5,9 @@
 # target runner; the S6 TLS cert is generated in memory, so no system CA pool is needed
 # and scratch (no shell, no certs, no packages) suffices.
 
-FROM golang:1.26 AS build
+# Build on the runner's native platform and cross-compile to TARGETARCH: the final stage
+# is scratch (no RUN), so a multi-arch image needs no QEMU emulation.
+FROM --platform=$BUILDPLATFORM golang:1.26 AS build
 WORKDIR /src
 
 # Download modules in their own layer, so a source edit that leaves go.mod/go.sum
@@ -18,7 +20,8 @@ COPY . .
 # VERSION stamps main.version, mirroring the Makefile / GoReleaser -ldflags. `make docker`
 # passes --build-arg VERSION=$(git describe ...); a bare `docker build` defaults to "docker".
 ARG VERSION=docker
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+ARG TARGETOS=linux TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-s -w -X main.version=${VERSION}" \
     -o /smsc-simulator ./cmd/smsc-simulator
 
