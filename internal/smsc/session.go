@@ -99,17 +99,16 @@ type session struct {
 	writerClosed chan struct{}
 }
 
-func newSession(id uint64, conn net.Conn, v *virtualSMSC, quit <-chan struct{}) *session {
+func newSession(conn net.Conn, v *virtualSMSC, quit <-chan struct{}) *session {
 	quiescenceMS := v.cfg.EffectiveQuiescenceFlushMs()
 	if quiescenceMS > maxQuiescenceFlushMS {
 		quiescenceMS = maxQuiescenceFlushMS // validated at load, clamped here so the conversion cannot overflow
 	}
 	return &session{
-		id:           id,
 		conn:         conn,
 		smsc:         v,
 		quit:         quit,
-		logger:       v.logger.With(slog.Uint64("bind_id", id)),
+		logger:       v.logger,
 		outbound:     make(chan []byte, 8),
 		writerClosed: make(chan struct{}),
 		quiescence:   time.Duration(quiescenceMS) * time.Millisecond,
@@ -406,6 +405,11 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 		return
 	}
 
+	// The ordinal is taken only now, on a successful bind: a bare TCP connect (k8s
+	// tcpSocket probe, wait-for-port) or a rejected bind must not shift it, since it seeds
+	// this bind's PRNG and message_ids (invariant a).
+	s.id = s.smsc.bindSeq.Add(1)
+	s.logger = s.logger.With(slog.Uint64("bind_id", s.id))
 	s.state = stateBound
 	s.systemID = bind.SystemID
 	s.bindType = bindType

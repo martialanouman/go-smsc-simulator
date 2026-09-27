@@ -38,7 +38,7 @@ type virtualSMSC struct {
 	// observable only (GET /logical-clock), never a scheduling reference; its order
 	// across concurrent binds is not reproducible (plan §1.5).
 	logicalClock atomic.Uint64
-	// bindSeq assigns each accepted session a monotonic ordinal, used both as the
+	// bindSeq assigns each successfully bound session a monotonic ordinal, used both as the
 	// bind id in /binds and as the high part of the deterministic message_id.
 	bindSeq atomic.Uint64
 	// dlrDropped counts delivery receipts that could not be emitted for a mapping

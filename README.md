@@ -90,7 +90,7 @@ docker compose up                            # carrier plaintext clé-en-main (2
 
 En cluster Kubernetes, le dossier [`deploy/`](deploy/) fournit un manifeste complet —
 un `ConfigMap` (votre `.yml`), un `Deployment` (1 réplique, `runAsNonRoot`,
-`readinessProbe` TCP) et un `Service` ClusterIP exposant `smpp` (2775) et
+sondes `GET /health`) et un `Service` ClusterIP exposant `smpp` (2775) et
 `observability` (9000) :
 
 ```bash

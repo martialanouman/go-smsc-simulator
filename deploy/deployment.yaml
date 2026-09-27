@@ -39,13 +39,24 @@ spec:
             limits:
               memory: 128Mi
               cpu: 500m
+          # Probes hit the read-only HTTP surface, never the SMPP port: a TCP connect there
+          # would show up as a client connection on the carrier under test.
           readinessProbe:
-            # SMPP port accepting connections == ready. The kubelet dials it, so this
-            # works even though the scratch image has no shell for an exec probe.
-            tcpSocket:
-              port: smpp
+            httpGet:
+              path: /health
+              port: observability
             initialDelaySeconds: 1
             periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: observability
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - name: config
               mountPath: /etc/smsc
