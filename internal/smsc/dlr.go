@@ -33,11 +33,10 @@ type dlrEvent struct {
 // scheduleDLR queues the delivery receipt for a successful submit, due at the origin
 // tick plus the profile's configured delay. A receipt can only travel on a bind able to
 // receive deliver_sm; since the DLR is anchored to the origin bind (spec §6.3), a pure
-// transmitter origin has no return path — that receipt is counted and logged, never
+// transmitter origin has no return path — that receipt is logged (Warn), never
 // emitted silently on a bad mapping.
 func (s *session) scheduleDLR(messageID string, msg *smpp.Message, plan *scenario.DLRPlan, respSent <-chan struct{}) {
 	if !s.canReceive {
-		s.smsc.dlrDropped.Add(1)
 		s.logger.Warn("dropping DLR: origin bind cannot receive deliver_sm",
 			slog.String("message_id", messageID), slog.String("bind_type", s.bindType))
 		return

@@ -4,10 +4,6 @@
 // It is a test/CI tool. It is never a production component, and it has no
 // configuration API: the YAML file passed to --config is the only input, read
 // once at startup. Reconfiguring means editing the file and restarting.
-//
-// STUB S1/S2: at S0 the process loads its config, serves the read-only
-// observability surface, and waits for SIGTERM. It hosts no virtual SMSC and
-// speaks no SMPP yet; those land at S1 and S2. See plan §5 and §6.
 package main
 
 import (
