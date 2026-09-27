@@ -31,6 +31,10 @@ var (
 	ErrUnterminated     = errors.New("c-octet string not terminated")
 	ErrUnknownCommand   = errors.New("unknown command_id")
 	ErrBadShortMessage  = errors.New("sm_length outside valid range")
+	// ErrPartialFrame reports a read that failed after part of a frame was consumed. It
+	// deliberately hides the cause (a deadline expiry included): the stream has lost
+	// bytes, so the caller must not retry on it as if nothing had been read.
+	ErrPartialFrame = errors.New("read failed mid-frame")
 )
 
 // ReadPDU reads exactly one framed PDU off r and returns its raw bytes (header
@@ -40,9 +44,14 @@ var (
 //
 // It returns io.EOF when r is cleanly closed between PDUs, so a session read loop
 // can distinguish a normal disconnect from a mid-PDU truncation (io.ErrUnexpectedEOF).
+// Only a deadline that fires between frames surfaces as a timeout; mid-frame it is
+// ErrPartialFrame, since the consumed bytes are lost and a retry would desynchronise.
 func ReadPDU(r io.Reader) ([]byte, error) {
 	var lenBuf [4]byte
-	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+	if n, err := io.ReadFull(r, lenBuf[:]); err != nil {
+		if n > 0 {
+			return nil, partial(err)
+		}
 		return nil, err
 	}
 	length := binary.BigEndian.Uint32(lenBuf[:])
@@ -53,9 +62,19 @@ func ReadPDU(r io.Reader) ([]byte, error) {
 	frame := make([]byte, length)
 	copy(frame, lenBuf[:])
 	if _, err := io.ReadFull(r, frame[4:]); err != nil {
-		return nil, err
+		return nil, partial(err)
 	}
 	return frame, nil
+}
+
+// partial maps a mid-frame read failure: a truncation stays io.ErrUnexpectedEOF, anything
+// else (notably a deadline expiry) becomes ErrPartialFrame so it no longer reads as a
+// retryable timeout.
+func partial(err error) error {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrPartialFrame, err)
 }
 
 // Decode parses a raw framed PDU (as returned by ReadPDU) into a PDU. The body is
