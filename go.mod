@@ -1,6 +1,6 @@
 module github.com/martialanouman/go-smsc-simulator
 
-go 1.26.5
+go 1.26.8
 
 require (
 	github.com/prometheus/client_golang v1.23.2
