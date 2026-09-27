@@ -3,6 +3,15 @@
 > **Catégorie Diátaxis : Guide pratique.** Objectif : packager et lancer le simulateur
 > en conteneur, puis en cluster, pour la CI ou un environnement de test partagé.
 
+## Image publiée (GHCR)
+
+Chaque release publie l'image multi-arch (`linux/amd64`, `linux/arm64`) sur GHCR, taguée
+comme la release et `latest` :
+
+```bash
+docker pull ghcr.io/martialanouman/go-smsc-simulator:latest   # ou :vX.Y.Z
+```
+
 ## Construire l'image
 
 ```bash

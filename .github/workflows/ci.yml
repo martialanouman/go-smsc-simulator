@@ -130,6 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the tag and create the Release
+      packages: write # push the image to ghcr.io
     # Serialise releases: two merges landing close together must not race to tag.
     concurrency:
       group: release
@@ -175,3 +176,28 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The distribution image, published to the public GHCR package of this repo
+      # under the same tag as the Release (plus `latest`). Same Dockerfile as
+      # `make docker`, so local and published images are built identically.
+      - name: ghcr login
+        if: steps.version.outputs.release == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.version.outputs.release == 'true'
+        uses: docker/setup-buildx-action@v4
+      - name: image
+        if: steps.version.outputs.release == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ steps.version.outputs.next }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.next }}
+            ghcr.io/${{ github.repository }}:latest
+          # Links the package to this repo on ghcr.io (and its README/visibility page).
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
