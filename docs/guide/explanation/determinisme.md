@@ -120,8 +120,8 @@ octet-pour-octet. L'invariant (a) au sens strict se **prouve sur `flaky-carrier`
 
 ## Le mode chaos, pour l'exploration
 
-Omettre le `seed` bascule en **mode chaos** : PRNG non graîné, `clock: wallclock`
-autorisé et par défaut pour les mécanismes périodiques. Aucune prétention de
+Omettre le `seed` bascule en **mode chaos** : PRNG non graîné (les planifications DLR/MO
+restent ancrées sur les ticks ; `clock: wallclock` est réservé). Aucune prétention de
 reproductibilité — c'est le mode des tests exploratoires (« est-ce que quelque chose
 casse sous un mélange imprévisible ? »), pas des assertions CI. Le mode graîné reste
 le mode principal ; le chaos est le secondaire.

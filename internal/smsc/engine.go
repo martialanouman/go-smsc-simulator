@@ -168,14 +168,14 @@ func (e *Engine) acceptLoop(v *virtualSMSC) {
 			// loop's normal exit, not an error to report.
 			return
 		}
-		id := v.bindSeq.Add(1)
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
+			s := newSession(conn, v, e.quit)
 			// Last-resort panic boundary, scoped to this one session: a panic here must
 			// not escape to crash the process or the other virtual SMSCs (S6/T1).
-			defer e.recoverSession(v, id)
-			newSession(id, conn, v, e.quit).run()
+			defer e.recoverSession(v, s)
+			s.run()
 		}()
 	}
 }
@@ -187,11 +187,11 @@ func (e *Engine) acceptLoop(v *virtualSMSC) {
 // unwind cleanly (wg.Done, deferred outside, still runs). It is deliberately scoped to
 // one session: never a global recover that would mask a determinism bug across
 // instances (S6/T1, CLAUDE.md "recover de dernier ressort par SMSC virtuel").
-func (e *Engine) recoverSession(v *virtualSMSC, id uint64) {
+func (e *Engine) recoverSession(v *virtualSMSC, s *session) {
 	if r := recover(); r != nil {
 		e.logger.Error("session panic recovered",
 			slog.String("virtual_smsc", v.cfg.Name),
-			slog.Uint64("bind_id", id),
+			slog.Uint64("bind_id", s.id), // 0 if the panic hit before a successful bind
 			slog.Any("panic", r),
 			slog.String("stack", string(debug.Stack())))
 	}
@@ -257,15 +257,4 @@ func (e *Engine) LogicalClock(id string) (uint64, bool) {
 		return 0, false
 	}
 	return v.logicalClock.Load(), true
-}
-
-// DLRsDropped returns how many delivery receipts one virtual SMSC could not emit for a
-// mapping reason (e.g. a transmitter-only origin bind). It is a read-only counter, not
-// wired to an HTTP route at S4 — DLR inspection and Prometheus metrics land at S6.
-func (e *Engine) DLRsDropped(id string) (uint64, bool) {
-	v, ok := e.byName[id]
-	if !ok {
-		return 0, false
-	}
-	return v.dlrDropped.Load(), true
 }

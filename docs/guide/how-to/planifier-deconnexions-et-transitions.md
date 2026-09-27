@@ -65,8 +65,10 @@ curl -s http://localhost:9000/metrics | grep smsc_active_scenario
 
 ## Drainage au repos
 
-Déconnexions et transitions planifiées sont, comme les DLR/MO, drainées par le **flush
-de quiescence** si le trafic cesse avant leur tick (invariant d).
+Le **flush de quiescence** draine les DLR/MO en attente si le trafic cesse (invariant d).
+Les déconnexions et transitions planifiées, elles, ne se déclenchent **qu'à leur tick** :
+un bind silencieux avant `at_tick` (ou un receiver pur, dont l'horloge n'avance jamais)
+n'est ni coupé ni basculé.
 
 ## Fixtures d'exemple
 

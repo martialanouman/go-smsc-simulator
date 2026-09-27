@@ -22,6 +22,10 @@ const MaxPDULen = 64 * 1024
 // scanning an attacker-sized field, while staying well above every real maximum.
 const maxCOctetLen = 256
 
+// maxTLVs bounds the optional parameters of one PDU. Real traffic carries a handful; the
+// cap stops a frame of zero-length TLVs from decoding into ~16k structs (~40x its size).
+const maxTLVs = 64
+
 // Decode error sentinels. Every malformed input maps to one of these — the decoder
 // never panics, so it is safe to point straight at a network socket and to fuzz.
 var (
@@ -31,6 +35,11 @@ var (
 	ErrUnterminated     = errors.New("c-octet string not terminated")
 	ErrUnknownCommand   = errors.New("unknown command_id")
 	ErrBadShortMessage  = errors.New("sm_length outside valid range")
+	ErrTooManyTLVs      = errors.New("too many optional parameters")
+	// ErrPartialFrame reports a read that failed after part of a frame was consumed. It
+	// deliberately hides the cause (a deadline expiry included): the stream has lost
+	// bytes, so the caller must not retry on it as if nothing had been read.
+	ErrPartialFrame = errors.New("read failed mid-frame")
 )
 
 // ReadPDU reads exactly one framed PDU off r and returns its raw bytes (header
@@ -40,9 +49,14 @@ var (
 //
 // It returns io.EOF when r is cleanly closed between PDUs, so a session read loop
 // can distinguish a normal disconnect from a mid-PDU truncation (io.ErrUnexpectedEOF).
+// Only a deadline that fires between frames surfaces as a timeout; mid-frame it is
+// ErrPartialFrame, since the consumed bytes are lost and a retry would desynchronise.
 func ReadPDU(r io.Reader) ([]byte, error) {
 	var lenBuf [4]byte
-	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+	if n, err := io.ReadFull(r, lenBuf[:]); err != nil {
+		if n > 0 {
+			return nil, partial(err)
+		}
 		return nil, err
 	}
 	length := binary.BigEndian.Uint32(lenBuf[:])
@@ -53,9 +67,19 @@ func ReadPDU(r io.Reader) ([]byte, error) {
 	frame := make([]byte, length)
 	copy(frame, lenBuf[:])
 	if _, err := io.ReadFull(r, frame[4:]); err != nil {
-		return nil, err
+		return nil, partial(err)
 	}
 	return frame, nil
+}
+
+// partial maps a mid-frame read failure: a truncation stays io.ErrUnexpectedEOF, anything
+// else (notably a deadline expiry) becomes ErrPartialFrame so it no longer reads as a
+// retryable timeout.
+func partial(err error) error {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrPartialFrame, err)
 }
 
 // Decode parses a raw framed PDU (as returned by ReadPDU) into a PDU. The body is
@@ -298,6 +322,9 @@ func (r *reader) tlvs() ([]TLV, error) {
 		if r.pos+4 > len(r.b) {
 			return nil, ErrTruncated
 		}
+		if len(out) == maxTLVs {
+			return nil, ErrTooManyTLVs
+		}
 		tag := binary.BigEndian.Uint16(r.b[r.pos:])
 		length := int(binary.BigEndian.Uint16(r.b[r.pos+2:]))
 		r.pos += 4
@@ -328,18 +355,9 @@ func (w *writer) cOctetString(s string) {
 func (w *writer) tlvs(tlvs []TLV) {
 	var hdr [4]byte
 	for _, t := range tlvs {
-		// A TLV length is a uint16; a value longer than that cannot be represented,
-		// and MaxPDULen bounds it well below in practice. Clamp defensively.
-		n := len(t.Value)
-		if n > maxTLVValueLen {
-			n = maxTLVValueLen
-		}
 		binary.BigEndian.PutUint16(hdr[0:2], t.Tag)
-		binary.BigEndian.PutUint16(hdr[2:4], uint16(n))
+		binary.BigEndian.PutUint16(hdr[2:4], uint16(len(t.Value))) //nolint:gosec // Encode caps the PDU at MaxPDULen < 0xFFFF
 		w.buf.Write(hdr[:])
-		w.buf.Write(t.Value[:n])
+		w.buf.Write(t.Value)
 	}
 }
-
-// maxTLVValueLen is the largest value a TLV's uint16 length field can address.
-const maxTLVValueLen = 0xFFFF

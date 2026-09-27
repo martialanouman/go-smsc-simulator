@@ -68,7 +68,7 @@ Il contient :
 - **`deployment.yaml`** — `Deployment` (1 réplique), args
   `["--config", "/etc/smsc/config.yml"]`, ports nommés `smpp` (2775) et `observability`
   (9000), `runAsNonRoot` (65534), requests 64Mi/100m, limits 128Mi/500m,
-  `readinessProbe` TCP sur le port `smpp`. Le ConfigMap est monté en lecture seule sur
+  sondes readiness/liveness `GET /health` sur `observability` (jamais le port `smpp`). Le ConfigMap est monté en lecture seule sur
   `/etc/smsc`.
 - **`service.yaml`** — `Service` ClusterIP exposant `smpp` (2775) et `observability`
   (9000).

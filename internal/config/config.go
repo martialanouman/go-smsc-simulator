@@ -81,6 +81,9 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// ErrMultipleDocuments flags a .yml holding more than one YAML document.
+var ErrMultipleDocuments = errors.New("config must be a single yaml document")
+
 // decode parses YAML from r. It is split out of Load so tests can exercise the
 // parser without touching the filesystem; name is only used to locate errors.
 func decode(r io.Reader, name string) (*Config, error) {
@@ -95,6 +98,10 @@ func decode(r io.Reader, name string) (*Config, error) {
 			return &Config{}, nil
 		}
 		return nil, fmt.Errorf("parse config %s: %w", name, err)
+	}
+	// A second document would be silently ignored (KnownFields never sees it).
+	if err := dec.Decode(new(yaml.Node)); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parse config %s: %w", name, ErrMultipleDocuments)
 	}
 
 	return &cfg, nil

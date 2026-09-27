@@ -370,7 +370,9 @@ func (c *Client) write(pdu *smpp.PDU) {
 	}
 }
 
-// roundTrip writes a request and reads the single PDU the server sends back.
+// roundTrip writes a request and reads the single PDU the server sends back. A PDU that
+// is not that response (an interleaved deliver_sm, say) fails the test loudly rather than
+// being returned as if it were the answer.
 func (c *Client) roundTrip(req *smpp.PDU) *smpp.PDU {
 	c.t.Helper()
 
@@ -384,7 +386,12 @@ func (c *Client) roundTrip(req *smpp.PDU) *smpp.PDU {
 	if _, err := c.conn.Write(b); err != nil {
 		c.t.Fatalf("write %s: %v", req.CommandID, err)
 	}
-	return c.read()
+	resp := c.read()
+	if resp.SequenceNumber != req.SequenceNumber || resp.CommandID != req.CommandID.Response() && resp.CommandID != smpp.GenericNack {
+		c.t.Fatalf("%s seq %d: got %s seq %d, want its response (use Read/ReadDeliverSM for interleaved PDUs)",
+			req.CommandID, req.SequenceNumber, resp.CommandID, resp.SequenceNumber)
+	}
+	return resp
 }
 
 // read reads and decodes one PDU under the io timeout.

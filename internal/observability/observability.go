@@ -30,9 +30,6 @@ func NewLogger(w io.Writer, level slog.Level) *slog.Logger {
 // Go runtime and process collectors that nobody asked for, and would make two
 // simulators in one test binary collide. Collectors are registered by the
 // components that own them.
-//
-// STUB S6: the registry exists so wiring is settled, but no /metrics endpoint
-// serves it yet, and no collector is registered. Both land at S6. See plan §10.
 func NewRegistry() *prometheus.Registry {
 	return prometheus.NewRegistry()
 }

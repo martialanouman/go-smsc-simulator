@@ -193,8 +193,7 @@ func TestE2E_DLR_DeterministicReplay(t *testing.T) {
 }
 
 // TestE2E_DLR_TransmitterOriginDropped is the "unknown/bad mapping" case: a DLR whose
-// origin bind is transmitter-only has no return path, so it is counted and logged, never
-// emitted silently.
+// origin bind is transmitter-only has no return path, so it is logged and never emitted.
 func TestE2E_DLR_TransmitterOriginDropped(t *testing.T) {
 	t.Parallel()
 
@@ -209,9 +208,4 @@ func TestE2E_DLR_TransmitterOriginDropped(t *testing.T) {
 	}
 	// No deliver_sm may arrive on a transmitter bind, even past the quiescence window.
 	client.ExpectNoResponse(200 * time.Millisecond)
-
-	dropped, ok := h.engine.DLRsDropped(name)
-	if !ok || dropped != 1 {
-		t.Fatalf("DLRsDropped(%q) = (%d, %v), want (1, true)", name, dropped, ok)
-	}
 }

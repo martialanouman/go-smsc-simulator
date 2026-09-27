@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -82,6 +83,10 @@ type session struct {
 	// purpose — a transition is latent config, never quiescence-flushed (see schedule_events).
 	transitions      []config.ScheduledTransition
 	transitionCursor int
+	// disconnects is this bind's scheduled_disconnects, sorted by at_tick, consumed the same
+	// way (applyDueDisconnects) and for the same reason: never quiescence-flushed.
+	disconnects      []config.ScheduledDisconnect
+	disconnectCursor int
 
 	// sched is this bind's pending tick-scheduled events (DLRs at S4). It is drained by
 	// the read goroutine — on a submit that advances the clock (voie a) or, after the
@@ -97,21 +102,27 @@ type session struct {
 
 	outbound     chan []byte
 	writerClosed chan struct{}
+
+	// deferred tracks the goroutines holding a response back for its served latency (and
+	// the DLRs waiting on those responses). Teardown closes stopDeferred and waits on them
+	// before closing outbound, so none can ever send on a closed channel.
+	deferred     sync.WaitGroup
+	stopDeferred chan struct{}
 }
 
-func newSession(id uint64, conn net.Conn, v *virtualSMSC, quit <-chan struct{}) *session {
+func newSession(conn net.Conn, v *virtualSMSC, quit <-chan struct{}) *session {
 	quiescenceMS := v.cfg.EffectiveQuiescenceFlushMs()
 	if quiescenceMS > maxQuiescenceFlushMS {
 		quiescenceMS = maxQuiescenceFlushMS // validated at load, clamped here so the conversion cannot overflow
 	}
 	return &session{
-		id:           id,
 		conn:         conn,
 		smsc:         v,
 		quit:         quit,
-		logger:       v.logger.With(slog.Uint64("bind_id", id)),
+		logger:       v.logger,
 		outbound:     make(chan []byte, 8),
 		writerClosed: make(chan struct{}),
+		stopDeferred: make(chan struct{}),
 		quiescence:   time.Duration(quiescenceMS) * time.Millisecond,
 	}
 }
@@ -161,6 +172,9 @@ func (s *session) run() {
 	defer func() {
 		close(done)
 		<-closerDone
+		// Responses still inside their served latency are dropped with the link.
+		close(s.stopDeferred)
+		s.deferred.Wait()
 		close(s.outbound)
 		<-s.writerClosed
 		_ = s.conn.Close()
@@ -194,31 +208,65 @@ func (s *session) writeLoop() {
 // past the writer's life: if the writer has gone, the PDU is dropped rather than
 // deadlocking on a full channel.
 func (s *session) send(pdu *smpp.PDU) {
-	b, err := smpp.Encode(pdu)
-	if err != nil {
-		s.logger.Error("encode response", slog.String("command", pdu.CommandID.String()), slog.Any("error", err))
-		return
+	if b := s.encode(pdu, nil); b != nil {
+		s.sendBytes(b)
 	}
-	s.sendBytes(b)
 }
 
-// sendResp queues a submit_sm_resp, honouring an optional edge-case plan: with a plan
-// the response is deliberately malformed (protocol_edge_cases), otherwise it is encoded
-// strictly. This is the one seam where injection reaches the wire.
-func (s *session) sendResp(pdu *smpp.PDU, edge *scenario.EdgeCasePlan) {
+// encode encodes pdu, honouring an optional edge-case plan: with a plan the PDU is
+// deliberately malformed (protocol_edge_cases), otherwise it is encoded strictly — the
+// one seam where injection reaches the wire. An encode failure is logged and yields nil.
+func (s *session) encode(pdu *smpp.PDU, edge *scenario.EdgeCasePlan) []byte {
+	var (
+		b   []byte
+		err error
+	)
 	if edge == nil {
-		s.send(pdu)
-		return
+		b, err = smpp.Encode(pdu)
+	} else {
+		b, err = smpp.EncodeEdgeCase(pdu, edge.Kind)
 	}
-	b, err := smpp.EncodeEdgeCase(pdu, edge.Kind)
 	if err != nil {
-		s.logger.Error("encode edge-case response",
-			slog.String("command", pdu.CommandID.String()),
-			slog.String("edge_case", edge.Kind.String()),
-			slog.Any("error", err))
-		return
+		s.logger.Error("encode pdu", slog.String("command", pdu.CommandID.String()), slog.Any("error", err))
+		return nil
 	}
-	s.sendBytes(b)
+	return b
+}
+
+// respond queues an encoded submit_sm_resp after its served latency. A zero latency goes
+// out inline; otherwise a goroutine holds it back so readLoop keeps serving the rest of
+// the client's window (and its enquire_links) meanwhile — responses then complete out of
+// order, as on a real SMSC. The returned channel closes once the response is queued (nil
+// when it already is), so a DLR can wait on it and never overtake its submit_sm_resp.
+func (s *session) respond(b []byte, latencyMS uint64) <-chan struct{} {
+	if b == nil || latencyMS == 0 {
+		if b != nil {
+			s.sendBytes(b)
+		}
+		return nil
+	}
+	ready, sent := make(chan struct{}), make(chan struct{})
+	time.AfterFunc(latencyDuration(latencyMS), func() { close(ready) })
+	s.sendWhen(ready, b, sent)
+	return sent
+}
+
+// sendWhen queues b off the read goroutine once ready fires, then closes sent (if
+// non-nil). Teardown cancels it through stopDeferred.
+func (s *session) sendWhen(ready <-chan struct{}, b []byte, sent chan struct{}) {
+	s.deferred.Add(1)
+	go func() {
+		defer s.deferred.Done()
+		defer s.recoverGoroutine("deferred send")
+		select {
+		case <-ready:
+			s.sendBytes(b)
+			if sent != nil {
+				close(sent)
+			}
+		case <-s.stopDeferred:
+		}
+	}()
 }
 
 // sendBytes queues already-encoded bytes for the writer. It never blocks the read
@@ -317,7 +365,11 @@ func (s *session) readLoop() {
 				}
 				return // idle timeout with no pending events: reap the silent bind
 			}
-			if !errors.Is(err, net.ErrClosed) {
+			if errors.Is(err, smpp.ErrBadCommandLength) {
+				// The stream cannot be resynchronised; say why before teardown closes it.
+				// No sequence number was read, so it is 0 (SMPP v3.4 §4.3).
+				s.send(&smpp.PDU{CommandID: smpp.GenericNack, CommandStatus: smpp.StatusInvCmdLen})
+			} else if !errors.Is(err, net.ErrClosed) {
 				s.logger.Debug("read loop ended", slog.Any("error", err))
 			}
 			return
@@ -325,12 +377,7 @@ func (s *session) readLoop() {
 
 		pdu, err := smpp.Decode(frame)
 		if err != nil {
-			seq := binary.BigEndian.Uint32(frame[12:16]) // frame is >= 16 bytes (ReadPDU)
-			status := smpp.StatusSysErr
-			if errors.Is(err, smpp.ErrUnknownCommand) {
-				status = smpp.StatusInvCmdID
-			}
-			s.send(&smpp.PDU{CommandID: smpp.GenericNack, CommandStatus: status, SequenceNumber: seq})
+			s.rejectMalformed(frame, err)
 			continue
 		}
 
@@ -338,6 +385,29 @@ func (s *session) readLoop() {
 		if s.state == stateClosed {
 			return
 		}
+	}
+}
+
+// rejectMalformed answers a frame that failed to decode, per SMPP v3.4: an unknown
+// command_id gets generic_nack; a malformed body on a known request gets that command's
+// own _resp with a length status. A malformed response is dropped — a response is never
+// answered.
+func (s *session) rejectMalformed(frame []byte, err error) {
+	id := smpp.CommandID(binary.BigEndian.Uint32(frame[4:8]))
+	seq := binary.BigEndian.Uint32(frame[12:16]) // frame is >= 16 bytes (ReadPDU)
+	switch {
+	case errors.Is(err, smpp.ErrUnknownCommand):
+		s.send(&smpp.PDU{CommandID: smpp.GenericNack, CommandStatus: smpp.StatusInvCmdID, SequenceNumber: seq})
+	case id.IsResponse():
+	default:
+		status := smpp.StatusSysErr
+		switch {
+		case errors.Is(err, smpp.ErrBadShortMessage):
+			status = smpp.StatusInvMsgLen
+		case errors.Is(err, smpp.ErrTruncated):
+			status = smpp.StatusInvCmdLen
+		}
+		s.send(&smpp.PDU{CommandID: id.Response(), CommandStatus: status, SequenceNumber: seq})
 	}
 }
 
@@ -406,6 +476,11 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 		return
 	}
 
+	// The ordinal is taken only now, on a successful bind: a bare TCP connect (k8s
+	// tcpSocket probe, wait-for-port) or a rejected bind must not shift it, since it seeds
+	// this bind's PRNG and message_ids (invariant a).
+	s.id = s.smsc.bindSeq.Add(1)
+	s.logger = s.logger.With(slog.Uint64("bind_id", s.id))
 	s.state = stateBound
 	s.systemID = bind.SystemID
 	s.bindType = bindType
@@ -459,17 +534,18 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		return
 	}
 
-	// The tick is chosen before serving latency (the scenario keys its outcome and
-	// latency on it), but only committed once we are sure to record and answer. If the
-	// engine shuts down mid-latency we abandon the submit without advancing either
-	// clock, so logical_clock never counts a PDU the recorder never stored (plan §1.5).
 	tick := s.perBindClock + 1
 	// Apply any transition due at this tick before evaluating, so the submit at at_tick runs
 	// under the new profile (the switch is keyed to the logical clock, never the wall clock).
 	s.applyDueTransitions(tick)
 	decision := s.currentEngine.Evaluate(s.scenarioState, tick)
-	if !s.serveLatency(decision.LatencyMS) {
-		return // engine shutting down: abandon this submit rather than sleep on
+	// A disconnect ends the session, so its latency is served inline (nothing else on this
+	// bind is worth serving meanwhile). If the engine shuts down mid-latency the submit is
+	// abandoned without advancing either clock, so logical_clock never counts a PDU the
+	// recorder never stored (plan §1.5). Every other outcome is decided and committed now;
+	// its response alone is held back for the latency (see respond).
+	if decision.Outcome == scenario.OutcomeDisconnect && !s.serveLatency(decision.LatencyMS) {
+		return
 	}
 
 	// Every committed outcome — including timeout and disconnect — advances both clocks
@@ -489,6 +565,11 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	s.smsc.metrics.IncOutcome(name, outcomeLabel(decision.Outcome))
 	observeServed := func() {
 		s.smsc.metrics.ObserveServedLatency(name, string(s.currentEngine.Profile()), float64(decision.LatencyMS)/1000)
+	}
+	resp := func(status smpp.CommandStatus, body smpp.Body) <-chan struct{} {
+		observeServed()
+		pdu := &smpp.PDU{CommandID: smpp.SubmitSMResp, CommandStatus: status, SequenceNumber: pdu.SequenceNumber, Body: body}
+		return s.respond(s.encode(pdu, decision.EdgeCase), decision.LatencyMS)
 	}
 	// Anchor the quiescence window: the flush fires this long after the last submit_sm.
 	// Off the deterministic content path (it decides only WHEN to drain, never what or in
@@ -511,7 +592,6 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 
 	// A scheduled disconnect due at this tick that fires before_response cuts the link
 	// without answering this submit — the same seam as an OutcomeDisconnect before_response.
-	// The event stays pending (peeked, not drained); teardown discards it with the session.
 	if s.dueDisconnectBeforeResponse() {
 		s.state = stateClosed
 		return
@@ -520,22 +600,16 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	switch decision.Outcome {
 	case scenario.OutcomeSuccess:
 		// decision.EdgeCase (protocol_edge_cases) malforms this resp when set; nil = strict.
-		s.sendResp(&smpp.PDU{
-			CommandID:      smpp.SubmitSMResp,
-			CommandStatus:  smpp.StatusROK,
-			SequenceNumber: pdu.SequenceNumber,
-			Body:           &smpp.SubmitResp{MessageID: messageID},
-		}, decision.EdgeCase)
-		observeServed()
+		sent := resp(smpp.StatusROK, &smpp.SubmitResp{MessageID: messageID})
 		// A successful submit schedules its DLR (when the profile configures one), anchored
-		// to the origin tick + the configured delay on this bind.
+		// to the origin tick + the configured delay on this bind; it waits on sent so it
+		// never reaches the client before its submit_sm_resp.
 		if decision.DLR != nil {
-			s.scheduleDLR(messageID, msg, decision.DLR)
+			s.scheduleDLR(messageID, msg, decision.DLR, sent)
 		}
 	case scenario.OutcomeError:
 		// A non-ROK submit_sm_resp carries no message_id body.
-		s.sendResp(&smpp.PDU{CommandID: smpp.SubmitSMResp, CommandStatus: decision.Status, SequenceNumber: pdu.SequenceNumber}, decision.EdgeCase)
-		observeServed()
+		resp(decision.Status, nil)
 	case scenario.OutcomeTimeout:
 		// Withhold the response entirely; readLoop keeps reading so the client can send more
 		// (its own response_timeout fires eventually). Fall through to the drain: this submit
@@ -556,9 +630,10 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		return
 	}
 
-	// Normal drain (voie a): this submit advanced the clock, so release any DLRs whose
-	// due tick it has now reached, in deterministic tick order.
+	// Normal drain (voie a): this submit advanced the clock, so release any DLRs/MOs whose
+	// due tick it has now reached, in deterministic tick order, then any due disconnect.
 	s.drainDue(s.perBindClock)
+	s.applyDueDisconnects(s.perBindClock)
 }
 
 // serveLatency waits the served latency, returning false if the engine is shutting
@@ -568,10 +643,7 @@ func (s *session) serveLatency(ms uint64) bool {
 	if ms == 0 {
 		return true
 	}
-	if ms > maxServedLatencyMS {
-		ms = maxServedLatencyMS // a test peer never serves more than a day of latency
-	}
-	timer := time.NewTimer(time.Duration(ms) * time.Millisecond)
+	timer := time.NewTimer(latencyDuration(ms))
 	defer timer.Stop()
 	select {
 	case <-s.quit:
@@ -579,6 +651,15 @@ func (s *session) serveLatency(ms uint64) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// latencyDuration converts a served latency, clamped so the conversion cannot overflow:
+// a test peer never serves more than a day of latency.
+func latencyDuration(ms uint64) time.Duration {
+	if ms > maxServedLatencyMS {
+		ms = maxServedLatencyMS
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // messageID mints the deterministic id returned in submit_sm_resp and later

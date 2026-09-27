@@ -25,16 +25,18 @@ type dlrEvent struct {
 	destAddrTON   uint8
 	destAddrNPI   uint8
 	text          string // origin short_message, truncated to the receipt "text:" field
+
+	// respSent closes once the origin submit_sm_resp is queued; nil if it already was.
+	respSent <-chan struct{}
 }
 
 // scheduleDLR queues the delivery receipt for a successful submit, due at the origin
 // tick plus the profile's configured delay. A receipt can only travel on a bind able to
 // receive deliver_sm; since the DLR is anchored to the origin bind (spec §6.3), a pure
-// transmitter origin has no return path — that receipt is counted and logged, never
+// transmitter origin has no return path — that receipt is logged (Warn), never
 // emitted silently on a bad mapping.
-func (s *session) scheduleDLR(messageID string, msg *smpp.Message, plan *scenario.DLRPlan) {
+func (s *session) scheduleDLR(messageID string, msg *smpp.Message, plan *scenario.DLRPlan, respSent <-chan struct{}) {
 	if !s.canReceive {
-		s.smsc.dlrDropped.Add(1)
 		s.logger.Warn("dropping DLR: origin bind cannot receive deliver_sm",
 			slog.String("message_id", messageID), slog.String("bind_type", s.bindType))
 		return
@@ -52,6 +54,7 @@ func (s *session) scheduleDLR(messageID string, msg *smpp.Message, plan *scenari
 		destAddrTON:   msg.DestAddrTON,
 		destAddrNPI:   msg.DestAddrNPI,
 		text:          string(msg.ShortMessage),
+		respSent:      respSent,
 	})
 }
 
@@ -84,7 +87,7 @@ func (s *session) flushSchedule() {
 // teardown.
 func (s *session) emitDLR(d dlrEvent) {
 	state, errCode := dlrWireState(d.outcome)
-	s.send(smpp.NewDeliveryReceipt(smpp.DeliveryReceipt{
+	pdu := smpp.NewDeliveryReceipt(smpp.DeliveryReceipt{
 		MessageID:  d.messageID,
 		State:      state,
 		ErrorCode:  errCode,
@@ -99,7 +102,19 @@ func (s *session) emitDLR(d dlrEvent) {
 		DestAddr:      d.sourceAddr,
 		DestAddrTON:   d.sourceAddrTON,
 		DestAddrNPI:   d.sourceAddrNPI,
-	}))
+	})
+	// A receipt never overtakes its submit_sm_resp still inside its served latency.
+	if d.respSent != nil {
+		select {
+		case <-d.respSent:
+		default:
+			if b := s.encode(pdu, nil); b != nil {
+				s.sendWhen(d.respSent, b, nil)
+			}
+			return
+		}
+	}
+	s.send(pdu)
 }
 
 // dlrWireState maps a scenario DLR outcome onto the SMPP message state and the receipt

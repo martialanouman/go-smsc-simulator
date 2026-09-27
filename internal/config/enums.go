@@ -201,6 +201,13 @@ const (
 	ErrorCodeRInvSrcAdr  SMPPErrorCode = "ESME_RINVSRCADR"
 )
 
+// ValidError reports whether c is a known SMPP error code usable in place of a success.
+// ESME_ROK is a known status but not an error: as an error_code or error_mix key it would
+// answer an "error" outcome with an OK status, so it is rejected.
+func (c SMPPErrorCode) ValidError() bool {
+	return c != ErrorCodeROK && c.Valid()
+}
+
 // Valid reports whether c is a known SMPP error code.
 func (c SMPPErrorCode) Valid() bool {
 	switch c {

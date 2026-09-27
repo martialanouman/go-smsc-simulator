@@ -47,11 +47,11 @@ virtual_smscs:            # liste ; peut être vide
 | `address_range` | string | `""` | Regexp RE2 ; compilée à la validation (regexp invalide → erreur). |
 | `tls` | objet | désactivé | Voir [TLS](#tls). |
 | `seed` | uint64 \| absent | absent | Présent → **mode déterministe**. Absent → **mode chaos**. |
-| `pdu_buffer_size` | int | **aucun** | **Requis**, ≥ 1. Capacité du tampon circulaire de PDU. |
+| `pdu_buffer_size` | int | **aucun** | **Requis**, ∈ [1, 1000000]. Capacité du tampon circulaire de PDU (alloué d'emblée). |
 | `throughput_limit_per_sec` | int \| absent | absent | ≥ 1. Plafond de débit du SMSC virtuel (temps réel). Interdit avec un `seed` sur un profil non-throughput (voir [validation](#validation-fail-fast)). |
 | `quiescence_flush_ms` | uint64 \| absent | `250` | ∈ [1, 600000]. Fenêtre d'inactivité avant flush des événements planifiés. |
 | `scenario` | objet | — | Le profil et ses réglages. Voir ci-dessous. |
-| `mo_injection` | objet \| absent | absent | Injection de MO planifiés/auto. |
+| `mo_injection` | objet \| absent | absent | Injection de MO planifiés. |
 | `scheduled_disconnects` | liste | `[]` | Coupures de bind planifiées. |
 | `scheduled_transitions` | liste | `[]` | Transitions de profil planifiées. |
 
@@ -137,7 +137,7 @@ plafonnées à **600000 ms** (10 min). Pour `slow-carrier`, la latence est **con
 | `outcome_weights.delivered` | uint | Poids du résultat `delivered`. |
 | `outcome_weights.failed` | uint | Poids du résultat `failed`. |
 | `outcome_weights.expired` | uint | Poids du résultat `expired`. Somme des trois ≥ 1. |
-| `clock` | enum | `logical` (défaut) \| `wallclock`. `wallclock` **interdit** avec un `seed`. |
+| `clock` | enum | `logical` (défaut). `wallclock` *(réservé, non implémenté : rejeté à la validation)*. |
 
 Voir [how-to/planifier-des-dlr.md](../how-to/planifier-des-dlr.md).
 
@@ -154,25 +154,22 @@ Voir [how-to/injecter-des-cas-limites-protocolaires.md](../how-to/injecter-des-c
 
 ```yaml
 mo_injection:
-  mode: scheduled          # scheduled | auto | disabled
-  clock: logical           # logical (défaut) | wallclock (chaos seulement)
+  mode: scheduled          # scheduled | disabled (auto : réservé)
+  clock: logical           # logical (défaut) ; wallclock réservé
   events:                  # mode: scheduled
     - at_tick: 100
       source_addr: "33600000001"
       dest_addr: "33700000002"
       content: "MO probe A"
-  # mode: auto              # utilise à la place :
-  # rate_per_sec: 5
-  # content_template: "..."
 ```
 
 | Champ | Type | Notes |
 |---|---|---|
-| `mode` | enum | `scheduled` \| `auto` \| `disabled`. |
-| `clock` | enum | `logical` (défaut) \| `wallclock` (interdit avec `seed`). |
+| `mode` | enum | `scheduled` \| `disabled`. `auto` *(réservé, non implémenté : rejeté à la validation)*. |
+| `clock` | enum | `logical` (défaut). `wallclock` *(réservé, non implémenté : rejeté à la validation)*. |
 | `events[]` | liste | Mode `scheduled`. Chaque événement : `at_tick` (uint64), `source_addr`, `dest_addr`, `content`. |
-| `rate_per_sec` | int \| absent | Mode `auto`. |
-| `content_template` | string \| absent | Mode `auto`. |
+| `rate_per_sec` | int \| absent | Réservé au mode `auto`. |
+| `content_template` | string \| absent | Réservé au mode `auto`. |
 
 Voir [how-to/injecter-des-mo.md](../how-to/injecter-des-mo.md).
 
@@ -198,11 +195,11 @@ Voir [how-to/planifier-deconnexions-et-transitions.md](../how-to/planifier-decon
 | Enum | Valeurs |
 |---|---|
 | `profile` / `to_profile` | `healthy`, `flaky-carrier`, `throttling-carrier`, `dead-carrier`, `slow-carrier`, `throughput-capped` |
-| `clock` | `logical`, `wallclock` |
-| Codes SMPP (`error_code`, clés de `error_mix`) | `ESME_ROK`, `ESME_RTHROTTLED`, `ESME_RSUBMITFAIL`, `ESME_RINVDSTADR`, `ESME_RSYSERR`, `ESME_RMSGQFUL`, `ESME_RINVSRCADR` |
+| `clock` | `logical` (`wallclock` réservé) |
+| Codes SMPP (`error_code`, clés de `error_mix`) | `ESME_RTHROTTLED`, `ESME_RSUBMITFAIL`, `ESME_RINVDSTADR`, `ESME_RSYSERR`, `ESME_RMSGQFUL`, `ESME_RINVSRCADR` |
 | `mode` (dead-carrier) | `reject_bind`, `timeout_all` |
 | `latency.distribution` | `fixed`, `uniform`, `normal`, `spike` |
-| `mo_injection.mode` | `scheduled`, `auto`, `disabled` |
+| `mo_injection.mode` | `scheduled`, `disabled` (`auto` réservé) |
 | `scope` | `all`, `oldest`, `random` |
 | `when` | `before_response`, `after_response` |
 | `kinds` | `bad_length`, `unknown_command_id`, `bad_sequence` |
@@ -216,7 +213,8 @@ principales :
 |---|---|
 | `no config path given` | `--config` absent. |
 | `unknown scenario profile` | `profile`/`to_profile` hors catalogue. |
-| `wallclock clock requires no seed` | `clock: wallclock` alors qu'un `seed` est défini (dlr ou mo). |
+| `invalid enumerated value: … wallclock is reserved` | `clock: wallclock` (dlr ou mo) : réservé, non implémenté. |
+| `config must be a single yaml document` | Le fichier contient un second document YAML (`---`). |
 | `throughput_limit_per_sec requires no seed on a deterministic profile` | `seed` + `throughput_limit_per_sec` sur un profil non-throughput (idem transition seedée vers un profil throughput). Exempts : `throttling-carrier`, `throughput-capped`. |
 | `duplicate virtual smsc port` | Deux SMSC virtuels (ou collision avec `http_port`) sur le même port. |
 | `scenario parameter out of bounds` | Un paramètre hors de ses bornes. |
@@ -225,9 +223,15 @@ principales :
 | *TLS : cert/key dépareillés, cert sans `enabled`, fichier introuvable* | Voir [TLS](#tls). |
 
 Bornes numériques utiles : `port` ∈ [1, 65535] ; `addr_ton`/`addr_npi` ∈ [0, 255] ;
-`pdu_buffer_size` ≥ 1 ; `quiescence_flush_ms` ∈ [1, 600000] ; `throughput_cap_per_sec` ∈
-[1, 1000000] ; `success_rate` ∈ [0, 1] ; `dlr.delay.ticks` / `disconnect_interval_ticks`
-/ `interval_ticks` ≥ 1.
+`pdu_buffer_size` ∈ [1, 1000000] ; `quiescence_flush_ms` ∈ [1, 600000] ; `throughput_cap_per_sec` ∈
+[1, 1000000] ; `success_rate` ∈ [0, 1] (NaN rejeté) ; `dlr.delay.ticks` / `disconnect_interval_ticks`
+/ `interval_ticks` ≥ 1 ; `stddev_ms` ≤ plafond de latence du profil ; chaque poids
+(`error_mix`, `outcome_weights`) ≤ 1000000000 ; MO `source_addr`/`dest_addr` ≤ 20 octets,
+`content` ≤ 254 octets.
+
+Paramètre **requis** par profil : `success_rate` (flaky-carrier), `mode` (dead-carrier),
+`throughput_cap_per_sec` (throttling-carrier, throughput-capped). `ESME_ROK` n'est pas
+accepté comme code d'erreur.
 
 ## Voir aussi
 

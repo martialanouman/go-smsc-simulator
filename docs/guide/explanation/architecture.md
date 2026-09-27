@@ -38,7 +38,7 @@ package a une responsabilité nette :
 | `smsc` | **SMPP Server Engine** : listener TCP + goroutines par connexion. |
 | `scenario` | Catalogue **figé** des 6 profils + sélection de résultat pondérée. |
 | `fault` | Injection de latence, timeout, disconnect. |
-| `schedule` | **Schedule Runner** : DLR/MO/déconnexions/transitions par tick + flush de quiescence. |
+| `schedule` | **Schedule Runner** : DLR/MO par tick + flush de quiescence (déconnexions/transitions : curseurs par bind dans `smsc`, jamais flushés). |
 | `recorder` | Tampon circulaire borné des `submit_sm` reçus. |
 | `rng` | PRNG graîné par bind. |
 | `tlscert` | Certificat TLS auto-signé/chargé par instance, au boot. |

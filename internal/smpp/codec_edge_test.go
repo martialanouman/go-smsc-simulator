@@ -95,3 +95,61 @@ func TestEncodeEdgeCase_Deterministic(t *testing.T) {
 		}
 	}
 }
+
+// timeoutErr is a net.Error-shaped deadline expiry.
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+// stallingReader yields its bytes, then a deadline expiry.
+type stallingReader struct{ b []byte }
+
+func (r *stallingReader) Read(p []byte) (int, error) {
+	if len(r.b) == 0 {
+		return 0, timeoutErr{}
+	}
+	n := copy(p, r.b)
+	r.b = r.b[n:]
+	return n, nil
+}
+
+// A deadline that fires mid-frame has consumed bytes the next read can never get back,
+// so it must not look like a retryable timeout; only an expiry between frames may.
+func TestReadPDU_PartialFrameTimeoutIsNotATimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		in      []byte
+		timeout bool
+	}{
+		{"between frames", nil, true},
+		{"inside length", []byte{0, 0}, false},
+		{"inside body", []byte{0, 0, 0, 16, 0, 0}, false},
+	} {
+		_, err := ReadPDU(&stallingReader{b: tc.in})
+		var ne interface{ Timeout() bool }
+		got := errors.As(err, &ne) && ne.Timeout()
+		if got != tc.timeout {
+			t.Errorf("%s: timeout=%v (err %v), want %v", tc.name, got, err, tc.timeout)
+		}
+		if !tc.timeout && !errors.Is(err, ErrPartialFrame) {
+			t.Errorf("%s: err %v, want ErrPartialFrame", tc.name, err)
+		}
+	}
+}
+
+// A hostile submit_sm packed with zero-length TLVs must be rejected, not decoded into
+// tens of thousands of TLV structs (allocation amplification).
+func TestDecode_TooManyTLVs(t *testing.T) {
+	t.Parallel()
+	frame, err := Encode(&PDU{CommandID: SubmitSM, SequenceNumber: 1, Body: &Message{DestAddr: "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame = append(frame, make([]byte, 4*(maxTLVs+1))...)
+	binary.BigEndian.PutUint32(frame[0:4], uint32(len(frame))) //nolint:gosec // test frame, < MaxPDULen
+	if _, err := Decode(frame); !errors.Is(err, ErrTooManyTLVs) {
+		t.Fatalf("Decode err = %v, want ErrTooManyTLVs", err)
+	}
+}
