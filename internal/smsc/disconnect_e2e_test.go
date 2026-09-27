@@ -118,10 +118,11 @@ func TestE2E_ScheduledDisconnect_FiresUnderTimeoutTraffic(t *testing.T) {
 	pollBindsEmpty(t, h.baseURL, "carrier-disc-timeout")
 }
 
-// TestE2E_ScheduledDisconnect_FlushedAtQuiescence is invariant (d) for disconnects: a cut
-// scheduled beyond the ticks a bind reaches still fires via the quiescence flush once the
-// bind falls silent, rather than being frozen.
-func TestE2E_ScheduledDisconnect_FlushedAtQuiescence(t *testing.T) {
+// TestE2E_ScheduledDisconnect_NotFlushedAtQuiescence: a cut scheduled beyond the ticks a
+// bind reaches is latent, like a transition. The quiescence flush drains output (DLR/MO)
+// only; flushing the cut would drop every idle bind (a receiver never advances its clock)
+// ~quiescence after it binds, whatever at_tick.
+func TestE2E_ScheduledDisconnect_NotFlushedAtQuiescence(t *testing.T) {
 	t.Parallel()
 
 	cfg := disconnectConfig("carrier-disc-flush", 100, config.DisconnectScopeAll, config.DisconnectAfterResponse)
@@ -133,6 +134,7 @@ func TestE2E_ScheduledDisconnect_FlushedAtQuiescence(t *testing.T) {
 	if resp := client.Submit("33600000000", "33611111111", "m"); resp.CommandStatus != smpp.StatusROK {
 		t.Fatalf("submit = %d, want ROK", resp.CommandStatus)
 	}
-	client.ExpectClosed()
-	pollBindsEmpty(t, h.baseURL, "carrier-disc-flush")
+	if client.ClosedWithin(300 * time.Millisecond) {
+		t.Fatal("scheduled disconnect at tick 100 fired at tick 1 via the quiescence flush")
+	}
 }

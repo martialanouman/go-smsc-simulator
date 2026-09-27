@@ -65,8 +65,8 @@ func TestE2E_S5_RandomDisconnectDeterministic(t *testing.T) {
 
 // randomCutAtTick binds one session against a fresh seeded engine whose only rule is a
 // scope: random disconnect at atTick (after_response), drives `submits` submits, then reports
-// whether the bind was cut — either by the normal drain (submits >= atTick, voie a) or by the
-// quiescence flush (submits < atTick, voie b, thanks to the short flush window).
+// whether the bind was cut. The short flush window proves an idle bind short of at_tick is
+// never cut by the quiescence flush.
 func randomCutAtTick(t *testing.T, seed, atTick uint64, submits int) bool {
 	t.Helper()
 
@@ -90,20 +90,19 @@ func randomCutAtTick(t *testing.T, seed, atTick uint64, submits int) bool {
 	return client.ClosedWithin(300 * time.Millisecond)
 }
 
-// TestE2E_S5_RandomDisconnectTickStable guards that the scope: random decision is a stable
-// property of (seed, at_tick), independent of the drain path: reaching the disconnect via the
-// normal drain (busy up to at_tick) and via the quiescence flush (one submit then silence)
-// must agree. Keying the coin on the live clock instead of at_tick would make them diverge.
+// TestE2E_S5_RandomDisconnectTickStable guards that a scope: random disconnect depends only
+// on (seed, at_tick) and the logical clock: replaying up to at_tick decides the same, and a
+// bind that falls silent short of at_tick is never cut, whatever the wall-clock silence.
 func TestE2E_S5_RandomDisconnectTickStable(t *testing.T) {
 	t.Parallel()
 
 	const atTick = 3
 	for seed := uint64(1); seed <= 6; seed++ {
-		viaDrain := randomCutAtTick(t, seed, atTick, atTick) // voie a: reaches at_tick
-		viaFlush := randomCutAtTick(t, seed, atTick, 1)      // voie b: flushed short of at_tick
-		if viaDrain != viaFlush {
-			t.Fatalf("seed %d: random cut differs by drain path (voie a=%v, voie b=%v); the coin must key on at_tick",
-				seed, viaDrain, viaFlush)
+		if a, b := randomCutAtTick(t, seed, atTick, atTick), randomCutAtTick(t, seed, atTick, atTick); a != b {
+			t.Fatalf("seed %d: random cut not reproducible (%v then %v)", seed, a, b)
+		}
+		if randomCutAtTick(t, seed, atTick, 1) {
+			t.Fatalf("seed %d: idle bind short of at_tick was cut by the quiescence flush", seed)
 		}
 	}
 }

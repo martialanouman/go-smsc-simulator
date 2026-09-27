@@ -83,6 +83,10 @@ type session struct {
 	// purpose — a transition is latent config, never quiescence-flushed (see schedule_events).
 	transitions      []config.ScheduledTransition
 	transitionCursor int
+	// disconnects is this bind's scheduled_disconnects, sorted by at_tick, consumed the same
+	// way (applyDueDisconnects) and for the same reason: never quiescence-flushed.
+	disconnects      []config.ScheduledDisconnect
+	disconnectCursor int
 
 	// sched is this bind's pending tick-scheduled events (DLRs at S4). It is drained by
 	// the read goroutine — on a submit that advances the clock (voie a) or, after the
@@ -566,7 +570,6 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 
 	// A scheduled disconnect due at this tick that fires before_response cuts the link
 	// without answering this submit — the same seam as an OutcomeDisconnect before_response.
-	// The event stays pending (peeked, not drained); teardown discards it with the session.
 	if s.dueDisconnectBeforeResponse() {
 		s.state = stateClosed
 		return
@@ -605,9 +608,10 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 		return
 	}
 
-	// Normal drain (voie a): this submit advanced the clock, so release any DLRs whose
-	// due tick it has now reached, in deterministic tick order.
+	// Normal drain (voie a): this submit advanced the clock, so release any DLRs/MOs whose
+	// due tick it has now reached, in deterministic tick order, then any due disconnect.
 	s.drainDue(s.perBindClock)
+	s.applyDueDisconnects(s.perBindClock)
 }
 
 // serveLatency waits the served latency, returning false if the engine is shutting

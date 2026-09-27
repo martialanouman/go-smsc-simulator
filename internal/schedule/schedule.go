@@ -7,8 +7,9 @@
 // This is a deliberate split (spec §6.3, plan §8): the Runner decides only WHAT and IN
 // WHICH ORDER to drain — strictly deterministic in ticks, ordered (DueTick, Seq) — while
 // WHEN to drain (which may depend on the wall clock during quiescence) is the caller's
-// concern. S4 carries DLR events; S5 reuses the same Runner for MO, scheduled
-// disconnects and scenario transitions.
+// concern. It carries output only: DLRs and scheduled MOs. Scheduled disconnects and
+// scenario transitions are latent state changes, never flushed, so they live in per-bind
+// tick cursors instead (internal/smsc).
 package schedule
 
 import "sort"
@@ -16,8 +17,8 @@ import "sort"
 // Event is one scheduled action due at DueTick. Seq is a monotonic per-Runner insertion
 // counter that breaks ties between events sharing a due tick, making the drain order a
 // total, deterministic order — (DueTick, Seq) — independent of any wall-clock timing.
-// Payload is opaque: the Runner never inspects it, so it can hold a DLR at S4 and an MO
-// or disconnect at S5 without the package knowing anything about them.
+// Payload is opaque: the Runner never inspects it, so it can hold a DLR or an MO without
+// the package knowing anything about them.
 type Event struct {
 	DueTick uint64
 	Seq     uint64
@@ -66,21 +67,6 @@ func (r *Runner) DrainDue(clock uint64) []Event {
 	return due
 }
 
-// DuePending returns, WITHOUT removing them, the events due at or before clock, in the
-// same (DueTick, Seq) order DrainDue would yield. It lets the session inspect an imminent
-// event — a before_response scheduled disconnect, which must be acted on before the
-// current PDU's response is written — while the event itself still drains, and still
-// flushes at quiescence, through the normal paths. Returns nil when none are due.
-func (r *Runner) DuePending(clock uint64) []Event {
-	n := sort.Search(len(r.pending), func(i int) bool { return r.pending[i].DueTick > clock })
-	if n == 0 {
-		return nil
-	}
-	out := make([]Event, n)
-	copy(out, r.pending[:n])
-	return out
-}
-
 // DrainAll removes and returns every pending event in (DueTick, Seq) order, regardless
 // of tick. This is the quiescence flush: when traffic has ceased the clock will never
 // advance again, so the whole schedule is released rather than left frozen (invariant
@@ -97,12 +83,3 @@ func (r *Runner) DrainAll() []Event {
 // Len reports how many events are still pending — the caller uses it to decide whether a
 // quiescence deadline is worth arming at all.
 func (r *Runner) Len() int { return len(r.pending) }
-
-// NextDue reports the earliest pending due tick, if any. Present for callers that want
-// to arm on the next tick rather than the whole set.
-func (r *Runner) NextDue() (uint64, bool) {
-	if len(r.pending) == 0 {
-		return 0, false
-	}
-	return r.pending[0].DueTick, true
-}
