@@ -365,7 +365,11 @@ func (s *session) readLoop() {
 				}
 				return // idle timeout with no pending events: reap the silent bind
 			}
-			if !errors.Is(err, net.ErrClosed) {
+			if errors.Is(err, smpp.ErrBadCommandLength) {
+				// The stream cannot be resynchronised; say why before teardown closes it.
+				// No sequence number was read, so it is 0 (SMPP v3.4 §4.3).
+				s.send(&smpp.PDU{CommandID: smpp.GenericNack, CommandStatus: smpp.StatusInvCmdLen})
+			} else if !errors.Is(err, net.ErrClosed) {
 				s.logger.Debug("read loop ended", slog.Any("error", err))
 			}
 			return
@@ -373,12 +377,7 @@ func (s *session) readLoop() {
 
 		pdu, err := smpp.Decode(frame)
 		if err != nil {
-			seq := binary.BigEndian.Uint32(frame[12:16]) // frame is >= 16 bytes (ReadPDU)
-			status := smpp.StatusSysErr
-			if errors.Is(err, smpp.ErrUnknownCommand) {
-				status = smpp.StatusInvCmdID
-			}
-			s.send(&smpp.PDU{CommandID: smpp.GenericNack, CommandStatus: status, SequenceNumber: seq})
+			s.rejectMalformed(frame, err)
 			continue
 		}
 
@@ -386,6 +385,29 @@ func (s *session) readLoop() {
 		if s.state == stateClosed {
 			return
 		}
+	}
+}
+
+// rejectMalformed answers a frame that failed to decode, per SMPP v3.4: an unknown
+// command_id gets generic_nack; a malformed body on a known request gets that command's
+// own _resp with a length status. A malformed response is dropped — a response is never
+// answered.
+func (s *session) rejectMalformed(frame []byte, err error) {
+	id := smpp.CommandID(binary.BigEndian.Uint32(frame[4:8]))
+	seq := binary.BigEndian.Uint32(frame[12:16]) // frame is >= 16 bytes (ReadPDU)
+	switch {
+	case errors.Is(err, smpp.ErrUnknownCommand):
+		s.send(&smpp.PDU{CommandID: smpp.GenericNack, CommandStatus: smpp.StatusInvCmdID, SequenceNumber: seq})
+	case id.IsResponse():
+	default:
+		status := smpp.StatusSysErr
+		switch {
+		case errors.Is(err, smpp.ErrBadShortMessage):
+			status = smpp.StatusInvMsgLen
+		case errors.Is(err, smpp.ErrTruncated):
+			status = smpp.StatusInvCmdLen
+		}
+		s.send(&smpp.PDU{CommandID: id.Response(), CommandStatus: status, SequenceNumber: seq})
 	}
 }
 

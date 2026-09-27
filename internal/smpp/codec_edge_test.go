@@ -138,3 +138,18 @@ func TestReadPDU_PartialFrameTimeoutIsNotATimeout(t *testing.T) {
 		}
 	}
 }
+
+// A hostile submit_sm packed with zero-length TLVs must be rejected, not decoded into
+// tens of thousands of TLV structs (allocation amplification).
+func TestDecode_TooManyTLVs(t *testing.T) {
+	t.Parallel()
+	frame, err := Encode(&PDU{CommandID: SubmitSM, SequenceNumber: 1, Body: &Message{DestAddr: "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame = append(frame, make([]byte, 4*(maxTLVs+1))...)
+	binary.BigEndian.PutUint32(frame[0:4], uint32(len(frame))) //nolint:gosec // test frame, < MaxPDULen
+	if _, err := Decode(frame); !errors.Is(err, ErrTooManyTLVs) {
+		t.Fatalf("Decode err = %v, want ErrTooManyTLVs", err)
+	}
+}

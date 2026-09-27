@@ -27,6 +27,15 @@ const (
 	EnquireLinkResp     CommandID = 0x80000015
 )
 
+// responseBit marks a response command_id.
+const responseBit CommandID = 0x80000000
+
+// IsResponse reports whether c is a response (or generic_nack).
+func (c CommandID) IsResponse() bool { return c&responseBit != 0 }
+
+// Response returns the response command_id matching request c.
+func (c CommandID) Response() CommandID { return c | responseBit }
+
 // String renders the command id by name for logs and test failures, falling back
 // to hex for an unmodelled id.
 func (c CommandID) String() string {

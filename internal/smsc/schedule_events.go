@@ -25,10 +25,7 @@ type moEvent struct {
 // scheduleConfiguredEvents enqueues, on this bind's own Runner, the tick-anchored events
 // the config declares. Called once on a successful bind, so every bind gets its own copy of
 // the schedule keyed to its own clock.
-//
-// auto MO injection is validated at load but not emitted here: anchoring a per-second rate
-// to a logical tick counter (a pure RX bind never advances its clock at all) is deferred to
-// a later milestone. Only the scheduled mode is wired.
+// Only the scheduled MO mode exists; auto is reserved and rejected at load.
 func (s *session) scheduleConfiguredEvents() {
 	if mo := s.smsc.cfg.MOInjection; mo != nil && mo.Mode == config.MOModeScheduled {
 		for _, ev := range mo.Events {
