@@ -264,7 +264,7 @@ Aucune session ne se ferme en silence. Chaque chemin qui termine une session por
 | `write_error` | client | échec d'écriture : reset, broken pipe |
 | `write_timeout` | server | une écriture reste bloquée plus de 10 s : le client ne lit plus |
 | `idle_timeout` | server | aucune PDU pendant 5 min et rien en attente |
-| `partial_frame_timeout` | server | l'échéance de lecture expire **au milieu** d'une trame |
+| `partial_frame_timeout` | server | une trame commencée reste incomplète pendant 5 min (la fenêtre de quiescence ne s'applique qu'**entre** deux trames) |
 | `protocol_error` | server | `command_length` invalide : flux impossible à resynchroniser (`generic_nack` puis fermeture) |
 | `auth_failed` | server | bind avec des identifiants faux (`ESME_RBINDFAIL`) |
 | `bind_rejected` | server | `dead-carrier` en mode `reject_bind` |
@@ -290,7 +290,7 @@ Quand un écrivain en échec précède la fin de la lecture, sa raison (`write_t
 **Ce qu'un test de charge doit surveiller.** Sur un profil qui ne prévoit aucune déconnexion (`healthy`, `slow-carrier`, `throughput-capped`), `sum by (reason) (increase(smsc_session_closed_total{initiator="server"}[5m]))` doit rester **nul**. Toute valeur non nulle est un défaut du simulateur, ou une limite de ressource qu'il nomme :
 
 - `write_timeout` ou une hausse de `smsc_outbound_dropped_total` signalent une passerelle qui ne lit plus ses `deliver_sm` ;
-- `partial_frame_timeout` signale une échéance de lecture qui coupe une trame en cours ;
+- `partial_frame_timeout` signale un client qui laisse une trame inachevée pendant 5 min (jusqu'à v0.9.0, l'échéance de quiescence coupait à tort une trame en cours : c'était la cause des coupures de la campagne step-280, corrigée depuis) ;
 - `smsc_outbound_queue_depth` qui reste proche de 8 × binds indique une contre-pression permanente.
 
 Côté client, `client_eof`/`read_error` sans hausse côté serveur situent la cause dans la passerelle.

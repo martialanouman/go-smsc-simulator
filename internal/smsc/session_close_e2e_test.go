@@ -294,23 +294,63 @@ func TestSessionClose_Shutdown(t *testing.T) {
 	o.waitClose(t, "shutdown", "server", "transceiver")
 }
 
-// TestSessionClose_PartialFrameTimeout reproduces the healthy-profile cut deterministically:
-// with a DLR pending, the read deadline shrinks to the quiescence window, and a frame whose
-// tail arrives after that window expires mid-read. The server then cuts the session.
+// TestSessionClose_PartialFrameTimeout: a frame whose tail never arrives is cut once the
+// idle (liveness) window expires mid-frame.
 func TestSessionClose_PartialFrameTimeout(t *testing.T) {
 	t.Parallel()
-	o := startObserved(t, dlrConfig("close-partial", pu64(1), 1000, config.DLROutcomeWeights{Delivered: 1}, 100))
+	o := startObserved(t, healthyConfig("close-partial"), func(e *smsc.Engine) {
+		smsc.SetSessionTimeouts(e, 10*time.Second, 300*time.Millisecond)
+	})
 	c := bound(t, o)
-	c.Submit("33600000000", "33611111111", "m") // leaves a DLR pending for 1000 ticks
+	frame, err := smpp.Encode(&smpp.PDU{CommandID: smpp.EnquireLink, SequenceNumber: 99})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if _, err := c.Conn().Write(frame[:6]); err != nil { // half a frame, the tail never comes
+		t.Fatalf("write: %v", err)
+	}
+	o.waitClose(t, "partial_frame_timeout", "server", "transceiver")
+}
+
+// TestQuiescenceDeadlineNeverCutsAFrame is the step-280 regression: with a DLR pending, the
+// read deadline is only the quiescence wake-up. A frame that straddles it must be read whole
+// and answered — the healthy carrier must not cut the session.
+func TestQuiescenceDeadlineNeverCutsAFrame(t *testing.T) {
+	t.Parallel()
+	o := startObserved(t, dlrConfig("straddle", pu64(1), 1000, config.DLROutcomeWeights{Delivered: 1}, 100))
+	c := bound(t, o)
+	c.Submit("33600000000", "33611111111", "m") // leaves a DLR pending: quiescence deadline armed
 
 	frame, err := smpp.Encode(&smpp.PDU{CommandID: smpp.EnquireLink, SequenceNumber: 99})
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if _, err := c.Conn().Write(frame[:6]); err != nil { // half a frame, the tail never comes in time
-		t.Fatalf("write: %v", err)
+	if _, err := c.Conn().Write(frame[:6]); err != nil {
+		t.Fatalf("write head: %v", err)
 	}
-	o.waitClose(t, "partial_frame_timeout", "server", "transceiver")
+	time.Sleep(300 * time.Millisecond) // the quiescence window (100 ms) expires mid-frame
+	if _, err := c.Conn().Write(frame[6:]); err != nil {
+		t.Fatalf("write tail: %v", err)
+	}
+
+	// The flushed DLR and the enquire_link_resp both arrive, in either order.
+	var gotResp, gotDLR bool
+	for i := 0; i < 2; i++ {
+		switch p := c.Read(); p.CommandID {
+		case smpp.EnquireLinkResp:
+			gotResp = p.SequenceNumber == 99
+		case smpp.DeliverSM:
+			gotDLR = true
+		default:
+			t.Fatalf("unexpected %s", p.CommandID)
+		}
+	}
+	if !gotResp || !gotDLR {
+		t.Fatalf("enquire_link_resp=%v DLR=%v, want both", gotResp, gotDLR)
+	}
+	if got := o.series(t, "smsc_session_closed_total"); len(got) != 0 {
+		t.Errorf("session closed: %v", got)
+	}
 }
 
 // TestSessionClose_WriteTimeout: a client that stops reading wedges the writer until the
