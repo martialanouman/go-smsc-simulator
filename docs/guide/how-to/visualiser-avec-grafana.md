@@ -1,7 +1,7 @@
 # How-to — Visualiser l'activité avec Grafana
 
 > **Catégorie Diátaxis : Guide pratique.** Objectif : suivre en temps réel l'activité des
-> SMSC virtuels (débit, résultats servis, latence, binds, profil actif) dans un dashboard
+> SMSC virtuels (débit, résultats servis, latence, binds, profil actif, fermetures de session par raison) dans un dashboard
 > Grafana. Prérequis : les métriques sont exposées — voir
 > [scraper-les-métriques](scraper-les-metriques.md).
 
