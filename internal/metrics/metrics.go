@@ -1,6 +1,7 @@
 // Package metrics exposes Prometheus instrumentation for the virtual SMSCs, one series
 // set per instance. Every metric is labelled only from the bounded set
-// {virtual_smsc, bind_type, outcome, scenario} — never a MSISDN, message_id or content,
+// {virtual_smsc, bind_type, outcome, scenario, reason, initiator, kind} — each a closed
+// enumeration, never a MSISDN, message_id, system_id, address or content,
 // whose unbounded cardinality would be both a memory leak and a data leak (CLAUDE.md).
 package metrics
 
@@ -20,6 +21,9 @@ type Metrics struct {
 	submitOutcome  *prometheus.CounterVec
 	activeScenario *prometheus.GaugeVec
 	servedLatency  *prometheus.HistogramVec
+	sessionClosed  *prometheus.CounterVec
+	outboundDepth  *prometheus.GaugeVec
+	outboundDrop   *prometheus.CounterVec
 
 	// mu guards scenario, the per-virtual-SMSC record of which profile currently reads 1
 	// on activeScenario, so SetActiveScenario can zero the profile it replaces.
@@ -52,6 +56,18 @@ func New(reg prometheus.Registerer) *Metrics {
 			Help:    "Served submit_sm latency in seconds, per virtual SMSC and scenario.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // ~1ms .. ~16s, covers slow-carrier's 2-4s
 		}, []string{"virtual_smsc", "scenario"}),
+		sessionClosed: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "smsc_session_closed_total",
+			Help: "SMPP sessions closed, per virtual SMSC, bind type, closed reason and initiator.",
+		}, []string{"virtual_smsc", "bind_type", "reason", "initiator"}),
+		outboundDepth: f.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "smsc_outbound_queue_depth",
+			Help: "Encoded PDUs queued for writing, summed over the sessions of a virtual SMSC.",
+		}, []string{"virtual_smsc"}),
+		outboundDrop: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "smsc_outbound_dropped_total",
+			Help: "Outbound PDUs discarded because the session writer had failed, per virtual SMSC and kind (resp, dlr, mo).",
+		}, []string{"virtual_smsc", "kind"}),
 		scenario: make(map[string]string),
 	}
 }
@@ -93,4 +109,19 @@ func (m *Metrics) SetActiveScenario(virtualSMSC, scenario string) {
 	}
 	m.activeScenario.WithLabelValues(virtualSMSC, scenario).Set(1)
 	m.scenario[virtualSMSC] = scenario
+}
+
+// IncSessionClosed records a session close with its closed-set reason and initiator.
+func (m *Metrics) IncSessionClosed(virtualSMSC, bindType, reason, initiator string) {
+	m.sessionClosed.WithLabelValues(virtualSMSC, bindType, reason, initiator).Inc()
+}
+
+// AddOutboundDepth moves the aggregate outbound queue depth of a virtual SMSC by delta.
+func (m *Metrics) AddOutboundDepth(virtualSMSC string, delta float64) {
+	m.outboundDepth.WithLabelValues(virtualSMSC).Add(delta)
+}
+
+// IncOutboundDropped records an outbound PDU discarded after its session writer failed.
+func (m *Metrics) IncOutboundDropped(virtualSMSC, kind string) {
+	m.outboundDrop.WithLabelValues(virtualSMSC, kind).Inc()
 }

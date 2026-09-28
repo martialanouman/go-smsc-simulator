@@ -5,13 +5,19 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/martialanouman/go-smsc-simulator/internal/config"
+	"github.com/martialanouman/go-smsc-simulator/internal/metrics"
 	"github.com/martialanouman/go-smsc-simulator/internal/smpp"
 	"github.com/martialanouman/go-smsc-simulator/internal/smpptest"
 )
@@ -76,7 +82,8 @@ func TestIsolation_SessionPanicDoesNotKillSiblings(t *testing.T) {
 	}
 	t.Cleanup(func() { testPanicHook = nil })
 
-	engine, err := New([]config.VirtualSMSCConfig{isolationHealthyCfg("boom"), isolationHealthyCfg("healthy")}, nil, logger)
+	reg := prometheus.NewRegistry()
+	engine, err := New([]config.VirtualSMSCConfig{isolationHealthyCfg("boom"), isolationHealthyCfg("healthy")}, metrics.New(reg), logger)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -130,6 +137,18 @@ func TestIsolation_SessionPanicDoesNotKillSiblings(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
+	// The crashed session's close is attributed, not silent: reason panic, server-initiated.
+	if got := logs.String(); !strings.Contains(got, `level=WARN msg="session closed"`) ||
+		!strings.Contains(got, "reason=panic initiator=server") {
+		t.Errorf("no WARN session-closed record with reason=panic initiator=server, got:\n%s", got)
+	}
+	want := `smsc_session_closed_total{bind_type="transceiver",initiator="server",reason="panic",virtual_smsc="boom"} 1`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(
+		"# HELP smsc_session_closed_total "+sessionClosedHelp+"\n# TYPE smsc_session_closed_total counter\n"+want+"\n"),
+		"smsc_session_closed_total"); err != nil {
+		t.Errorf("panic close not counted: %v", err)
+	}
+
 	// The sibling instance is unaffected: bind and submit succeed after boom's crash.
 	healthy := smpptest.Dial(t, dial("healthy"))
 	if resp := healthy.BindTransceiver("smppclient1", "secret"); resp.CommandStatus != smpp.StatusROK {
@@ -161,5 +180,41 @@ func TestRecoverGoroutine_CatchesPanicAndRunsLaterDefers(t *testing.T) {
 	}
 	if got := logs.String(); !strings.Contains(got, "session goroutine panic recovered") || !strings.Contains(got, "writeLoop") {
 		t.Errorf("recoverGoroutine did not log the recovered panic; got:\n%s", got)
+	}
+}
+
+// sessionClosedHelp mirrors the metric's HELP text, which GatherAndCompare matches verbatim.
+const sessionClosedHelp = "SMPP sessions closed, per virtual SMSC, bind type, closed reason and initiator."
+
+// TestWriteFailureReason pins the one classification the black-box tests cannot provoke
+// reliably: a write that fails on its deadline is write_timeout (the server gave up), any
+// other write failure — a reset or broken pipe — is write_error (the peer broke the link).
+func TestWriteFailureReason(t *testing.T) {
+	t.Parallel()
+	for err, want := range map[error]closeReason{
+		os.ErrDeadlineExceeded:                                 reasonWriteTimeout,
+		&net.OpError{Op: "write", Err: os.ErrDeadlineExceeded}: reasonWriteTimeout,
+		&net.OpError{Op: "write", Err: syscall.EPIPE}:          reasonWriteError,
+		&net.OpError{Op: "write", Err: syscall.ECONNRESET}:     reasonWriteError,
+	} {
+		if got := writeFailure(err); got != want {
+			t.Errorf("writeFailure(%v) = %s, want %s", err, got, want)
+		}
+	}
+}
+
+// TestCloseReasonInitiator pins who each closed reason blames: the client when it hung up,
+// reset or unbound, the server for every close it decided (or suffered from its own limits).
+func TestCloseReasonInitiator(t *testing.T) {
+	t.Parallel()
+	client := map[closeReason]bool{reasonClientUnbind: true, reasonClientEOF: true, reasonReadError: true, reasonWriteError: true}
+	for _, r := range closeReasons {
+		want := "server"
+		if client[r] {
+			want = "client"
+		}
+		if got := r.initiator(); got != want {
+			t.Errorf("%s.initiator() = %s, want %s", r, got, want)
+		}
 	}
 }

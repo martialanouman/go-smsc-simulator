@@ -69,6 +69,10 @@ func DialTLS(t testing.TB, addr string, cfg *tls.Config) *Client {
 // call it directly.
 func (c *Client) Close() { _ = c.conn.Close() }
 
+// Conn exposes the raw connection for tests that must misbehave below the PDU level: write
+// half a frame, reset the link, or stop reading altogether.
+func (c *Client) Conn() net.Conn { return c.conn }
+
 func (c *Client) nextSeq() uint32 {
 	c.seq++
 	return c.seq
