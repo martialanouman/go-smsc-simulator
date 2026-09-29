@@ -462,7 +462,7 @@ func (s *session) readLoop() {
 		default:
 		}
 
-		frame, err := smpp.ReadPDU(s.conn)
+		frame, err := smpp.ReadPDU(&frameReader{s: s})
 		if err != nil {
 			// A read-deadline timeout is not necessarily the end of the session: it is how
 			// the quiescence flush is driven. Shutdown takes priority; then, while events
@@ -508,6 +508,33 @@ func (s *session) readLoop() {
 			return
 		}
 	}
+}
+
+// frameReader feeds ReadPDU one frame. The armed deadline may be the short quiescence
+// wake-up, which is only meant to fire BETWEEN frames: once the first byte of a frame has
+// arrived, the rest of the frame gets the idle (liveness) window instead. Otherwise a frame
+// straddling the wake-up would be cut mid-read, its consumed bytes lost, and the session
+// closed on a healthy carrier (the step-280 cuts, partial_frame_timeout).
+type frameReader struct {
+	s       *session
+	started bool
+}
+
+func (r *frameReader) Read(p []byte) (int, error) {
+	n, err := r.s.conn.Read(p)
+	if n > 0 && !r.started {
+		r.started = true
+		r.s.readDeadline = time.Now().Add(r.s.smsc.idleTimeout)
+		_ = r.s.conn.SetReadDeadline(r.s.readDeadline)
+		// Shutdown's past deadline (the closer) must win over this extension, whichever ran
+		// first: re-check quit after extending, as readLoop does after re-arming.
+		select {
+		case <-r.s.quit:
+			_ = r.s.conn.SetReadDeadline(time.Now())
+		default:
+		}
+	}
+	return n, err
 }
 
 // readFailure classifies a read that ended the session (a between-frames deadline expiry
