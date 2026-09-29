@@ -179,13 +179,19 @@ func TestE2E_MetricsLabelCardinalityBounded(t *testing.T) {
 	client := smpptest.Dial(t, h.addrs["carrier-a"])
 	client.BindTransceiver(testSystemID, testPassword)
 	client.Submit("33600000000", "33611111111", "hello world") // known MSISDNs + content
+	client.Unbind()                                            // a close sample must not leak system_id or address
+	forbiddenSystemID := testSystemID
 
-	allowed := map[string]bool{"virtual_smsc": true, "bind_type": true, "outcome": true, "scenario": true}
+	allowed := map[string]bool{
+		"virtual_smsc": true, "bind_type": true, "outcome": true, "scenario": true,
+		"reason": true, "initiator": true, "kind": true,
+	}
 	forbiddenValues := map[string]string{
-		"33600000000": "source MSISDN",
-		"33611111111": "dest MSISDN",
-		"hello world": "message content",
-		"1-0001":      "message_id",
+		"33600000000":     "source MSISDN",
+		"33611111111":     "dest MSISDN",
+		"hello world":     "message content",
+		"1-0001":          "message_id",
+		forbiddenSystemID: "system_id",
 	}
 
 	families, err := h.reg.Gather()
@@ -201,7 +207,7 @@ func TestE2E_MetricsLabelCardinalityBounded(t *testing.T) {
 		for _, metric := range mf.GetMetric() {
 			for _, lp := range metric.GetLabel() {
 				if !allowed[lp.GetName()] {
-					t.Errorf("metric %s carries unbounded label %q (allowed: virtual_smsc, bind_type, outcome, scenario)",
+					t.Errorf("metric %s carries unbounded label %q (allowed: virtual_smsc, bind_type, outcome, scenario, reason, initiator, kind)",
 						mf.GetName(), lp.GetName())
 				}
 				if what, bad := forbiddenValues[lp.GetValue()]; bad {

@@ -414,6 +414,52 @@
       ],
       "title": "Profil de scénario actif",
       "type": "state-timeline"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Sessions SMPP fermées par raison et initiateur (smsc_session_closed_total, spec §5.2.1). Sur un profil sans déconnexion prévue (healthy, slow-carrier, throughput-capped), toute fermeture initiator=server (en rouge) est un défaut ou une limite de ressource nommée : write_timeout = passerelle qui ne lit plus ses deliver_sm.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "min": 0,
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "^server · .*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 26 },
+      "id": 9,
+      "options": {
+        "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "sum by (initiator, reason) (increase(smsc_session_closed_total{virtual_smsc=~\"$virtual_smsc\"}[$__rate_interval]))",
+          "legendFormat": "{{initiator}} · {{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Fermetures de session par raison",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",

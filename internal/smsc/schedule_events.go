@@ -106,7 +106,7 @@ func (s *session) applyDueDisconnects(tick uint64) {
 		d := s.disconnects[s.disconnectCursor]
 		s.disconnectCursor++
 		if s.isDisconnectTarget(d.Scope, d.AtTick) {
-			s.state = stateClosed
+			s.closeWith(reasonScheduledDisconnect, nil)
 		}
 	}
 }
@@ -156,5 +156,5 @@ func (s *session) emitMO(m moEvent) {
 			slog.String("bind_type", s.bindType))
 		return
 	}
-	s.send(smpp.NewMobileOriginated(m.sourceAddr, m.destAddr, m.content))
+	s.sendKind(smpp.NewMobileOriginated(m.sourceAddr, m.destAddr, m.content), kindMO)
 }

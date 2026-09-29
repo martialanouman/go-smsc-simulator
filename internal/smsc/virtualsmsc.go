@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net"
 	"sync/atomic"
+	"time"
 
 	"github.com/martialanouman/go-smsc-simulator/internal/config"
 	"github.com/martialanouman/go-smsc-simulator/internal/observability"
@@ -28,6 +29,11 @@ type virtualSMSC struct {
 	binds   *bindRegistry
 	metrics metricsSink
 	logger  *slog.Logger
+
+	// writeTimeout and idleTimeout are the session limits (defaults writeTimeout and
+	// idleTimeout); fields only so tests can shorten them before Serve.
+	writeTimeout time.Duration
+	idleTimeout  time.Duration
 
 	// activeProfile is the read-only observable of the currently active profile. It is a
 	// best-effort cross-bind view (like logicalClock, its order across concurrent binds on
@@ -54,6 +60,9 @@ func newVirtualSMSC(cfg config.VirtualSMSCConfig, ln net.Listener, m metricsSink
 		binds:    newBindRegistry(),
 		metrics:  m,
 		logger:   logger.With(slog.String("virtual_smsc", cfg.Name)),
+
+		writeTimeout: writeTimeout,
+		idleTimeout:  idleTimeout,
 	}
 	v.activeProfile.Store(string(cfg.Scenario.Profile))
 	// Seed the active-scenario gauge at boot so a virtual SMSC that never transitions

@@ -109,12 +109,12 @@ func (s *session) emitDLR(d dlrEvent) {
 		case <-d.respSent:
 		default:
 			if b := s.encode(pdu, nil); b != nil {
-				s.sendWhen(d.respSent, b, nil)
+				s.sendWhen(d.respSent, b, kindDLR, nil)
 			}
 			return
 		}
 	}
-	s.send(pdu)
+	s.sendKind(pdu, kindDLR)
 }
 
 // dlrWireState maps a scenario DLR outcome onto the SMPP message state and the receipt

@@ -14,18 +14,24 @@ type metricsSink interface {
 	IncOutcome(virtualSMSC, outcome string)
 	ObserveServedLatency(virtualSMSC, scenario string, seconds float64)
 	SetActiveScenario(virtualSMSC, scenario string)
+	IncSessionClosed(virtualSMSC, bindType, reason, initiator string)
+	AddOutboundDepth(virtualSMSC string, delta float64)
+	IncOutboundDropped(virtualSMSC, kind string)
 }
 
 // noopMetrics is the default sink when none is supplied (tests, black-box boots). Every
 // method is a no-op, so instrumentation call sites never guard against a nil sink.
 type noopMetrics struct{}
 
-func (noopMetrics) IncBind(string, string)                       {}
-func (noopMetrics) DecBind(string, string)                       {}
-func (noopMetrics) IncSubmit(string)                             {}
-func (noopMetrics) IncOutcome(string, string)                    {}
-func (noopMetrics) ObserveServedLatency(string, string, float64) {}
-func (noopMetrics) SetActiveScenario(string, string)             {}
+func (noopMetrics) IncBind(string, string)                          {}
+func (noopMetrics) DecBind(string, string)                          {}
+func (noopMetrics) IncSubmit(string)                                {}
+func (noopMetrics) IncOutcome(string, string)                       {}
+func (noopMetrics) ObserveServedLatency(string, string, float64)    {}
+func (noopMetrics) SetActiveScenario(string, string)                {}
+func (noopMetrics) IncSessionClosed(string, string, string, string) {}
+func (noopMetrics) AddOutboundDepth(string, float64)                {}
+func (noopMetrics) IncOutboundDropped(string, string)               {}
 
 // outcomeLabel maps a scenario outcome to its bounded metric label. There is no
 // Outcome.String() to reuse, and the label set must stay closed for the cardinality

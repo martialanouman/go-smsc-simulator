@@ -25,7 +25,7 @@
 - **Enregistrement de PDU** — journal borné et interrogeable des `submit_sm` reçus par SMSC virtuel, pour vérifier ce que la passerelle a réellement envoyé (adresses, contenu, TON/NPI, codage). Exposé **en lecture seule** via la surface d'observabilité (§5.1).
 - **Support TLS** — optionnel par SMSC virtuel (bloc `tls` du `.yml`), avec génération intégrée de certificat auto-signé, reflétant `tls_enabled` du connecteur (§3.1 compagnon).
 - **Injection de cas limites protocolaires** — opt-in par profil dans le `.yml`, PDU malformées (longueur invalide, `command_id` invalide, numéros de séquence hors ordre) pour tester la robustesse du parsing — désactivé par défaut.
-- **Export de métriques** — métriques Prometheus par SMSC virtuel (binds, `submit_sm` reçus, résultats servis, scénario actif) exposées en **lecture seule** sur la surface d'observabilité, pour vérifier le trafic observé côté simulateur.
+- **Export de métriques** — métriques Prometheus par SMSC virtuel (binds, `submit_sm` reçus, résultats servis, scénario actif, fermetures de session par raison, file de sortie — §5.2.1) exposées en **lecture seule** sur la surface d'observabilité, pour vérifier le trafic observé côté simulateur.
 - **Intégration CI/CD** — une image Docker unique, un `.yml` monté comme unique entrée de configuration, un `docker-compose.yml` d'exemple câblant le simulateur comme connecteur(s) SMSC, et un modèle de Job Kubernetes pour les pipelines.
 
 ### 1.2 Exigences non fonctionnelles
@@ -252,6 +252,49 @@ GET     /metrics                                         # Prometheus exposition
 
 Note : `received-pdus` est en lecture seule. L'isolation entre exécutions de test est obtenue en **relançant le simulateur** avec le `.yml` de la fixture (démarrage < 2 s), ce qui repart d'un tampon vide et d'un `per_bind_clock` à zéro — plus déterministe qu'un reset à chaud.
 
+#### 5.2.1 Fermetures de session et file de sortie
+
+Aucune session ne se ferme en silence. Chaque chemin qui termine une session porte une **raison** tirée d'un ensemble **fermé**, publiée à la fois en métrique et dans un log `slog`.
+
+| `reason` | `initiator` | Déclencheur |
+|---|---|---|
+| `client_unbind` | client | l'ESME envoie `unbind` (le serveur répond `unbind_resp` puis ferme) |
+| `client_eof` | client | l'ESME ferme la connexion TCP (y compris une sonde TCP qui ne binde jamais) |
+| `read_error` | client | échec de lecture autre : reset, trame tronquée, erreur TLS |
+| `write_error` | client | échec d'écriture : reset, broken pipe |
+| `write_timeout` | server | une écriture reste bloquée plus de 10 s : le client ne lit plus |
+| `idle_timeout` | server | aucune PDU pendant 5 min et rien en attente |
+| `partial_frame_timeout` | server | l'échéance de lecture expire **au milieu** d'une trame |
+| `protocol_error` | server | `command_length` invalide : flux impossible à resynchroniser (`generic_nack` puis fermeture) |
+| `auth_failed` | server | bind avec des identifiants faux (`ESME_RBINDFAIL`) |
+| `bind_rejected` | server | `dead-carrier` en mode `reject_bind` |
+| `fault_injection` | server | le scénario tire un résultat `disconnect` (ex. `disconnect_interval_ticks`) |
+| `scheduled_disconnect` | server | une entrée de `scheduled_disconnects` cible ce bind |
+| `shutdown` | server | arrêt du processus (`SIGTERM`, `unbind` envoyé aux binds actifs) |
+| `panic` | server | panique récupérée dans la goroutine de session |
+
+Il n'existe **pas** de fermeture d'administration : la surface HTTP est en lecture seule (invariant c), aucun endpoint ne déconnecte un bind.
+
+Quand un écrivain en échec précède la fin de la lecture, sa raison (`write_timeout`/`write_error`) l'emporte : c'est la première cause, et ce que la lecture voit ensuite n'en est que la conséquence.
+
+**Métriques** (labels bornés, jamais de `system_id`, d'adresse ni d'identifiant de session) :
+
+- `smsc_session_closed_total{virtual_smsc, bind_type, reason, initiator}` — `bind_type` vaut `none` pour une connexion fermée avant toute tentative de bind ;
+- `smsc_outbound_queue_depth{virtual_smsc}` — PDU encodées en attente d'écriture, sommées sur les sessions ;
+- `smsc_outbound_dropped_total{virtual_smsc, kind}` — PDU jetées parce que l'écrivain de la session a échoué ; `kind` ∈ `resp` (réponses et contrôle de session), `dlr`, `mo`.
+
+**Log** : un enregistrement `session closed` par fermeture, en `WARN` si `initiator="server"`, en `DEBUG` sinon. Champs : `virtual_smsc`, `bind_id`, `bind_type`, `system_id`, `remote_addr`, `reason`, `initiator`, `err` (l'erreur brute), `lifetime`, `pdus_read`, `pdus_written`, `pdus_dropped`, `outbound_queue_depth`, `pending_scheduled`. Jamais le contenu d'une PDU.
+
+**Client qui ne lit pas assez vite.** Le serveur **bloque** : la file de sortie d'une session est bornée (8 PDU) et, pleine, elle suspend la lecture des `submit_sm` suivants. C'est une contre-pression TCP ordinaire, sans perte. Chaque écriture est bornée par une échéance de 10 s. Au-delà, l'écrivain abandonne (`write_timeout`, log `WARN` immédiat). Les PDU encore à émettre sont alors **jetées et comptées** dans `smsc_outbound_dropped_total` jusqu'à la fermeture de la session.
+
+**Ce qu'un test de charge doit surveiller.** Sur un profil qui ne prévoit aucune déconnexion (`healthy`, `slow-carrier`, `throughput-capped`), `sum by (reason) (increase(smsc_session_closed_total{initiator="server"}[5m]))` doit rester **nul**. Toute valeur non nulle est un défaut du simulateur, ou une limite de ressource qu'il nomme :
+
+- `write_timeout` ou une hausse de `smsc_outbound_dropped_total` signalent une passerelle qui ne lit plus ses `deliver_sm` ;
+- `partial_frame_timeout` signale une échéance de lecture qui coupe une trame en cours ;
+- `smsc_outbound_queue_depth` qui reste proche de 8 × binds indique une contre-pression permanente.
+
+Côté client, `client_eof`/`read_error` sans hausse côté serveur situent la cause dans la passerelle.
+
 ### 5.3 Interface SMPP (par port de SMSC virtuel)
 
 Comportement serveur SMPP v3.4 standard (v5.0 optionnel) — `bind_*`, `submit_sm`, `deliver_sm` (MO + DLR), `enquire_link`, `unbind` — surface identique à ce que `connector-pool-svc` attend d'un vrai SMSC (§5.1 compagnon), plus les modes opt-in de PDU malformées activés par `protocol_edge_cases_enabled` dans le profil.
@@ -298,7 +341,7 @@ Le déterminisme du mode à graine s'appuie sur un compteur logique de PDU, jama
 - **Image Docker** : binaire unique, base minimale, **config via un seul `.yml` monté** (ou passé par variable d'environnement pointant vers le fichier). Aucun port de configuration à exposer, seulement l'éventuel port d'observabilité.
 - **docker-compose** : le simulateur câblé comme une ou plusieurs entrées `smsc_connectors` de la passerelle pointant vers ses ports — indistinguable d'une vraie connexion opérateur. Le `.yml` du simulateur est monté comme fixture.
 - **Isolation entre tests** : relancer le conteneur avec le `.yml` de la fixture (démarrage < 2 s) plutôt que de réinitialiser à chaud — repart d'un état propre et d'un `per_bind_clock` à zéro.
-- **Test de charge** : associer un profil `throughput-capped`/`healthy` à fort débit (paramétré dans le `.yml`) avec l'outillage de génération de charge de la passerelle pour valider débit/latence bout-en-bout. Augmenter `pdu_buffer_size` si l'inspection de PDU sur toute la durée importe.
+- **Test de charge** : associer un profil `throughput-capped`/`healthy` à fort débit (paramétré dans le `.yml`) avec l'outillage de génération de charge de la passerelle pour valider débit/latence bout-en-bout. Augmenter `pdu_buffer_size` si l'inspection de PDU sur toute la durée importe. Surveiller `smsc_session_closed_total{initiator="server"}` : sur `healthy`, il doit rester nul (§5.2.1).
 - **Test de résilience** : décrire dans le `.yml` un profil `dead-carrier`/`flaky-carrier` (avec, au besoin, des `scheduled_transitions` pour scénariser panne puis reprise) et asserter contre l'API Admin de la passerelle (statut connecteur, disjoncteur) et les endpoints read-only `/received-pdus`/`/binds` du simulateur pour vérifier que les comportements de résilience documentés (§6.13/§6.15/§6.1 compagnon) se produisent réellement.
 
 ---

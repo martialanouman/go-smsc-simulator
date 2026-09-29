@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"runtime/debug"
@@ -100,8 +101,22 @@ type session struct {
 	// decide whether a graceful shutdown warrants an unbind, so it is atomic.
 	bound atomic.Bool
 
-	outbound     chan []byte
+	outbound     chan outboundPDU
 	writerClosed chan struct{}
+	// writeErr is set by writeLoop before it closes writerClosed, so it is safe to read
+	// once writerClosed is observed closed.
+	writeErr error
+
+	// Close attribution, all owned by the read goroutine except where noted: why the
+	// session ends (closeWith), the deadline armed for the current read (to tell our own
+	// deadline from a peer failure mid-frame), and the counters the close record reports.
+	openedAt     time.Time
+	closeReason  closeReason
+	closeErr     error
+	readDeadline time.Time
+	pdusRead     uint64
+	pdusWritten  uint64        // owned by writeLoop, read after writerClosed
+	pdusDropped  atomic.Uint64 // any goroutine that queues
 
 	// deferred tracks the goroutines holding a response back for its served latency (and
 	// the DLRs waiting on those responses). Teardown closes stopDeferred and waits on them
@@ -120,11 +135,34 @@ func newSession(conn net.Conn, v *virtualSMSC, quit <-chan struct{}) *session {
 		smsc:         v,
 		quit:         quit,
 		logger:       v.logger,
-		outbound:     make(chan []byte, 8),
+		outbound:     make(chan outboundPDU, 8),
 		writerClosed: make(chan struct{}),
 		stopDeferred: make(chan struct{}),
 		quiescence:   time.Duration(quiescenceMS) * time.Millisecond,
+		openedAt:     time.Now(), // telemetry only (session lifetime), never a decision input
 	}
+}
+
+// Outbound kinds, the kind label of smsc_outbound_dropped_total: a delivery receipt, a
+// mobile-originated message, or anything else the server writes (responses and control).
+const (
+	kindResp = "resp"
+	kindDLR  = "dlr"
+	kindMO   = "mo"
+)
+
+// outboundPDU is one encoded PDU queued for the writer, tagged with its kind.
+type outboundPDU struct {
+	b    []byte
+	kind string
+}
+
+// closeWith ends the session for reason: readLoop returns once it sees stateClosed, and
+// teardown records the close.
+func (s *session) closeWith(reason closeReason, err error) {
+	s.state = stateClosed
+	s.closeReason = reason
+	s.closeErr = err
 }
 
 // run owns the whole session lifetime: it starts the writer and a closer that drops
@@ -170,6 +208,10 @@ func (s *session) run() {
 	// outbound and panic). Only then close outbound, flush the writer, close the socket
 	// and deregister the bind.
 	defer func() {
+		// A writer that already exited failed on its own, BEFORE the read side ended: that
+		// write failure is the cause, and whatever the read side saw next is a consequence.
+		writerFailedFirst := isClosed(s.writerClosed)
+		queueDepth := len(s.outbound)
 		close(done)
 		<-closerDone
 		// Responses still inside their served latency are dropped with the link.
@@ -177,7 +219,12 @@ func (s *session) run() {
 		s.deferred.Wait()
 		close(s.outbound)
 		<-s.writerClosed
+		for p := range s.outbound { // left behind by a failed writer
+			s.smsc.metrics.AddOutboundDepth(s.smsc.cfg.Name, -1)
+			s.drop(p.kind)
+		}
 		_ = s.conn.Close()
+		s.recordClose(writerFailedFirst, queueDepth)
 		s.smsc.binds.remove(s.id)
 		// Balance the IncBind on a successful bind. A rejected bind never set bound, so the
 		// active-binds gauge only ever counts binds that actually registered.
@@ -194,13 +241,76 @@ func (s *session) run() {
 func (s *session) writeLoop() {
 	defer close(s.writerClosed)
 	defer s.recoverGoroutine("writeLoop") // runs before close(s.writerClosed) on panic, so teardown still unblocks
-	for b := range s.outbound {
+	for p := range s.outbound {
+		s.smsc.metrics.AddOutboundDepth(s.smsc.cfg.Name, -1)
 		// A write deadline per write: a client that stopped reading must not wedge this
 		// goroutine indefinitely — the deadline turns it into a write error and teardown.
-		_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-		if _, err := s.conn.Write(b); err != nil {
+		_ = s.conn.SetWriteDeadline(time.Now().Add(s.smsc.writeTimeout))
+		if _, err := s.conn.Write(p.b); err != nil {
+			s.writeErr = err
+			s.drop(p.kind)
+			s.logger.Warn("session writer failed; outbound PDUs are dropped until the session closes",
+				slog.String("reason", string(writeFailure(err))), slog.Any("err", err))
 			return
 		}
+		s.pdusWritten++
+	}
+}
+
+// drop counts one outbound PDU discarded because the writer had failed.
+func (s *session) drop(kind string) {
+	s.pdusDropped.Add(1)
+	s.smsc.metrics.IncOutboundDropped(s.smsc.cfg.Name, kind)
+}
+
+// isClosed reports whether ch is closed, without blocking.
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// recordClose emits the one metric sample and log record of this session's end. The
+// reason is the one closeWith set; if none was set, readLoop panicked. A writer that failed
+// before the read side ended takes precedence: it is the first cause (a client that stops
+// reading, then hangs up, closed on write_timeout — not on client_eof). It runs after the
+// writer is joined, so writeErr and pdusWritten are safe to read.
+func (s *session) recordClose(writerFailedFirst bool, queueDepth int) {
+	reason, err := s.closeReason, s.closeErr
+	if reason == "" {
+		reason = reasonPanic
+	}
+	if writerFailedFirst && s.writeErr != nil {
+		reason, err = writeFailure(s.writeErr), s.writeErr
+	}
+	bindType := s.bindType
+	if bindType == "" {
+		bindType = "none" // closed before any bind attempt (a bare TCP probe)
+	}
+	initiator := reason.initiator()
+	s.smsc.metrics.IncSessionClosed(s.smsc.cfg.Name, bindType, string(reason), initiator)
+
+	attrs := []any{
+		slog.String("reason", string(reason)),
+		slog.String("initiator", initiator),
+		slog.String("bind_type", bindType),
+		slog.String("system_id", s.systemID),
+		slog.String("remote_addr", s.conn.RemoteAddr().String()),
+		slog.Any("err", err),
+		slog.Duration("lifetime", time.Since(s.openedAt)),
+		slog.Uint64("pdus_read", s.pdusRead),
+		slog.Uint64("pdus_written", s.pdusWritten),
+		slog.Uint64("pdus_dropped", s.pdusDropped.Load()),
+		slog.Int("outbound_queue_depth", queueDepth),
+		slog.Int("pending_scheduled", s.sched.Len()),
+	}
+	if initiator == "server" {
+		s.logger.Warn("session closed", attrs...)
+	} else {
+		s.logger.Debug("session closed", attrs...)
 	}
 }
 
@@ -208,8 +318,13 @@ func (s *session) writeLoop() {
 // past the writer's life: if the writer has gone, the PDU is dropped rather than
 // deadlocking on a full channel.
 func (s *session) send(pdu *smpp.PDU) {
+	s.sendKind(pdu, kindResp)
+}
+
+// sendKind is send for a PDU whose kind is not a response (a DLR or MO deliver_sm).
+func (s *session) sendKind(pdu *smpp.PDU, kind string) {
 	if b := s.encode(pdu, nil); b != nil {
-		s.sendBytes(b)
+		s.sendBytes(b, kind)
 	}
 }
 
@@ -241,26 +356,26 @@ func (s *session) encode(pdu *smpp.PDU, edge *scenario.EdgeCasePlan) []byte {
 func (s *session) respond(b []byte, latencyMS uint64) <-chan struct{} {
 	if b == nil || latencyMS == 0 {
 		if b != nil {
-			s.sendBytes(b)
+			s.sendBytes(b, kindResp)
 		}
 		return nil
 	}
 	ready, sent := make(chan struct{}), make(chan struct{})
 	time.AfterFunc(latencyDuration(latencyMS), func() { close(ready) })
-	s.sendWhen(ready, b, sent)
+	s.sendWhen(ready, b, kindResp, sent)
 	return sent
 }
 
 // sendWhen queues b off the read goroutine once ready fires, then closes sent (if
 // non-nil). Teardown cancels it through stopDeferred.
-func (s *session) sendWhen(ready <-chan struct{}, b []byte, sent chan struct{}) {
+func (s *session) sendWhen(ready <-chan struct{}, b []byte, kind string, sent chan struct{}) {
 	s.deferred.Add(1)
 	go func() {
 		defer s.deferred.Done()
 		defer s.recoverGoroutine("deferred send")
 		select {
 		case <-ready:
-			s.sendBytes(b)
+			s.sendBytes(b, kind)
 			if sent != nil {
 				close(sent)
 			}
@@ -269,13 +384,16 @@ func (s *session) sendWhen(ready <-chan struct{}, b []byte, sent chan struct{}) 
 	}()
 }
 
-// sendBytes queues already-encoded bytes for the writer. It never blocks the read
-// goroutine past the writer's life: if the writer has gone, the bytes are dropped
-// rather than deadlocking on a full channel.
-func (s *session) sendBytes(b []byte) {
+// sendBytes queues already-encoded bytes for the writer. While the writer lives, a full
+// queue blocks the caller: backpressure, bounded by the writer's writeTimeout. Once the
+// writer has failed, the bytes are dropped and counted rather than deadlocking.
+func (s *session) sendBytes(b []byte, kind string) {
+	s.smsc.metrics.AddOutboundDepth(s.smsc.cfg.Name, 1) // before the send, so the writer's -1 never runs first
 	select {
-	case s.outbound <- b:
+	case s.outbound <- outboundPDU{b: b, kind: kind}:
 	case <-s.writerClosed:
+		s.smsc.metrics.AddOutboundDepth(s.smsc.cfg.Name, -1)
+		s.drop(kind)
 	}
 }
 
@@ -301,12 +419,13 @@ func (s *session) recoverGoroutine(where string) {
 // quiescence window (measured from the last submit) so the flush can fire while the bind
 // sits silent — whichever is sooner, so idle-reaping still bounds a truly dead bind.
 func (s *session) armReadDeadline() {
-	deadline := time.Now().Add(idleTimeout)
+	deadline := time.Now().Add(s.smsc.idleTimeout)
 	if s.sched.Len() > 0 {
 		if q := s.lastSubmit.Add(s.quiescence); q.Before(deadline) {
 			deadline = q
 		}
 	}
+	s.readDeadline = deadline
 	_ = s.conn.SetReadDeadline(deadline)
 }
 
@@ -338,6 +457,7 @@ func (s *session) readLoop() {
 		// past deadline unblocks the ReadPDU below normally.
 		select {
 		case <-s.quit:
+			s.closeWith(reasonShutdown, nil)
 			return
 		default:
 		}
@@ -351,6 +471,7 @@ func (s *session) readLoop() {
 			if s.isTimeout(err) {
 				select {
 				case <-s.quit:
+					s.closeWith(reasonShutdown, nil)
 					return
 				default:
 				}
@@ -363,17 +484,18 @@ func (s *session) readLoop() {
 					}
 					continue
 				}
-				return // idle timeout with no pending events: reap the silent bind
+				s.closeWith(reasonIdleTimeout, err) // idle timeout with no pending events: reap the silent bind
+				return
 			}
-			if errors.Is(err, smpp.ErrBadCommandLength) {
+			s.closeWith(s.readFailure(err), err)
+			if s.closeReason == reasonProtocolError {
 				// The stream cannot be resynchronised; say why before teardown closes it.
 				// No sequence number was read, so it is 0 (SMPP v3.4 §4.3).
 				s.send(&smpp.PDU{CommandID: smpp.GenericNack, CommandStatus: smpp.StatusInvCmdLen})
-			} else if !errors.Is(err, net.ErrClosed) {
-				s.logger.Debug("read loop ended", slog.Any("error", err))
 			}
 			return
 		}
+		s.pdusRead++
 
 		pdu, err := smpp.Decode(frame)
 		if err != nil {
@@ -385,6 +507,30 @@ func (s *session) readLoop() {
 		if s.state == stateClosed {
 			return
 		}
+	}
+}
+
+// readFailure classifies a read that ended the session (a between-frames deadline expiry
+// is handled by the caller). It runs on the read goroutine, after the closer may have set
+// a past deadline on shutdown, hence the quit check first.
+func (s *session) readFailure(err error) closeReason {
+	select {
+	case <-s.quit:
+		return reasonShutdown
+	default:
+	}
+	switch {
+	case errors.Is(err, io.EOF):
+		return reasonClientEOF
+	case errors.Is(err, smpp.ErrBadCommandLength):
+		return reasonProtocolError
+	case errors.Is(err, smpp.ErrPartialFrame) && !time.Now().Before(s.readDeadline):
+		// ErrPartialFrame hides its cause; our own deadline having passed is the signal that
+		// the read deadline, not the peer, cut the frame.
+		return reasonPartialFrameTimeout
+	default:
+		// A reset, a truncated frame (io.ErrUnexpectedEOF) or any other transport failure.
+		return reasonReadError
 	}
 }
 
@@ -432,7 +578,7 @@ func (s *session) handle(pdu *smpp.PDU) {
 		s.send(&smpp.PDU{CommandID: smpp.EnquireLinkResp, CommandStatus: smpp.StatusROK, SequenceNumber: pdu.SequenceNumber})
 	case smpp.Unbind:
 		s.send(&smpp.PDU{CommandID: smpp.UnbindResp, CommandStatus: smpp.StatusROK, SequenceNumber: pdu.SequenceNumber})
-		s.state = stateClosed
+		s.closeWith(reasonClientUnbind, nil)
 	case smpp.DeliverSMResp:
 		// The ESME acknowledging a DLR (or MO) we emitted. S4 tracks no outbound window,
 		// so there is nothing to correlate — accept it silently rather than generic_nack a
@@ -462,8 +608,9 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 	// dead-carrier in reject_bind mode turns everyone away, regardless of credentials
 	// (spec §6.1). This reuses the same ESME_RBINDFAIL + close seam as a bad credential.
 	if s.smsc.scenario.RejectBind() {
+		s.bindType = bindType // labels the close; the bind itself never registered
 		s.send(&smpp.PDU{CommandID: respID, CommandStatus: smpp.StatusBindFail, SequenceNumber: pdu.SequenceNumber})
-		s.state = stateClosed
+		s.closeWith(reasonBindRejected, nil)
 		return
 	}
 
@@ -471,8 +618,10 @@ func (s *session) handleBind(pdu *smpp.PDU) {
 	idOK := subtle.ConstantTimeCompare([]byte(bind.SystemID), []byte(creds.SystemID)) == 1
 	pwOK := subtle.ConstantTimeCompare([]byte(bind.Password), []byte(creds.Password)) == 1
 	if !idOK || !pwOK {
+		s.bindType = bindType
+		s.systemID = bind.SystemID // the claimed id, to attribute the refusal
 		s.send(&smpp.PDU{CommandID: respID, CommandStatus: smpp.StatusBindFail, SequenceNumber: pdu.SequenceNumber})
-		s.state = stateClosed
+		s.closeWith(reasonAuthFailed, nil)
 		return
 	}
 
@@ -545,6 +694,7 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	// recorder never stored (plan §1.5). Every other outcome is decided and committed now;
 	// its response alone is held back for the latency (see respond).
 	if decision.Outcome == scenario.OutcomeDisconnect && !s.serveLatency(decision.LatencyMS) {
+		s.closeWith(reasonShutdown, nil)
 		return
 	}
 
@@ -593,7 +743,7 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 	// A scheduled disconnect due at this tick that fires before_response cuts the link
 	// without answering this submit — the same seam as an OutcomeDisconnect before_response.
 	if s.dueDisconnectBeforeResponse() {
-		s.state = stateClosed
+		s.closeWith(reasonScheduledDisconnect, nil)
 		return
 	}
 
@@ -626,7 +776,7 @@ func (s *session) handleSubmit(pdu *smpp.PDU) {
 			})
 			observeServed() // a before-response disconnect never answers, so it stays unsampled
 		}
-		s.state = stateClosed // teardown closes the TCP connection
+		s.closeWith(reasonFaultInjection, nil) // teardown closes the TCP connection
 		return
 	}
 
